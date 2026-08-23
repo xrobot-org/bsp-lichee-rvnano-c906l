@@ -1,4 +1,4 @@
-# SG200x C906 BSP
+# SG200x C906L BSP
 
 This is a C906 FreeRTOS BSP with an MCU-style source layout. It deliberately
 does not carry a second FreeRTOS RISC-V port. Firmware startup, trap handling,
@@ -9,13 +9,11 @@ provided by the pinned Milk-V Duo SDK used by Sophgo's Debian integration.
 Core/                         BSP-wide non-application code
 User/                         product application entry points
 libxr/                        LibXR Git submodule
-sg200x-c906-xr-driver/        SG200x LibXR platform-driver repository
+sg200x-c906l-xr-driver/       SG200x C906L LibXR platform-driver repository
 scripts/                      build integration and runtime deployment tools
 ```
 
-`sg200x-c906-xr-driver/` is intended to be a separate Git submodule. Its
-remote URL is intentionally not guessed here; add it to `.gitmodules` once the
-driver repository is published.
+`sg200x-c906l-xr-driver/` is the C906L coprocessor platform-driver submodule.
 
 ## Vendor SDK
 
@@ -69,14 +67,14 @@ the current LibXR sources require C++20 features that the SDK's legacy GCC
 ~/toolchains/xpack-riscv-none-elf-gcc-15.2.0-1/bin/riscv-none-elf-
 ```
 
-The `SG2002 C906 (WSL, GCC 15)` configure preset and `firmware-gcc15` build
+The `SG200x C906L (WSL, GCC 15)` configure preset and `firmware-gcc15` build
 preset select that prefix without modifying `PATH`. `GCC 14 fallback` remains
 available for bisecting toolchain regressions. To use another location,
 set `SG200X_CROSS_COMPILE` when invoking `cmake` or edit the preset. The
 distribution GCC is used only by clangd's `--query-driver` to discover the
 compatible freestanding system headers.
 
-In CMake Tools select the `SG2002 C906 (WSL, GCC 15)` configure preset, then
+In CMake Tools select the `SG200x C906L (WSL, GCC 15)` configure preset, then
 build the `firmware-gcc15` preset once. The root CMake project intentionally has `LANGUAGES
 NONE`, so CMake Tools does not select a compiler: it starts the SDK build, and
 the SDK selects the configured `riscv-none-elf-gcc/g++` prefix. The database is copied even
@@ -106,7 +104,7 @@ Verify both commands exist and accept the target flags:
 'int main() { return 0; }' | riscv64-unknown-elf-g++ -march=rv64imafdc -mabi=lp64d -x c++ -S -o NUL -
 ```
 
-The `SG2002 C906 (Windows)` preset selects the matching
+The `SG200x C906L (Windows)` preset selects the matching
 `riscv-none-embed-` prefix. A toolchain with another prefix is supported by
 changing `SG200X_CROSS_COMPILE`, including its trailing hyphen. Vendor sources
 contain Windows-reserved `aux.*` paths, so the SDK worktree must live on the WSL
@@ -123,7 +121,7 @@ wsl -d Ubuntu-26.04 bash -lc '
 `CMakeUserPresets.json` is intentionally Git-ignored and contains the local
 absolute paths for Git Bash and the WCH compiler. Its SDK path is the Windows
 UNC form `//wsl.localhost/Ubuntu-26.04/home/keruth/duo-sdk-c906`.
-Select `SG2002 C906 (Windows Local)` in CMake Tools, or run:
+Select `SG200x C906L (Windows Local)` in CMake Tools, or run:
 
 ```powershell
 cmake --preset c906-windows-local
@@ -161,7 +159,7 @@ timebase frequency. Do not read `0x7400BFF8` as a standard CLINT `mtime`: the
 SG2002 TRM marks that address range reserved, the SDK undefines non-QEMU
 `CLINT_MTIME`, and a board test showed that the MMIO access can hang. UART,
 I2C, and SPI driver work is DMA-only as specified in
-`sg200x-c906-xr-driver/README.md`.
+`sg200x-c906l-xr-driver/README.md`.
 
 The application keeps the LED task by default. Set `SG200X_TIMEBASE_TEST=1`
 when building to run the 1024-sample CSR/API monotonicity test, or set

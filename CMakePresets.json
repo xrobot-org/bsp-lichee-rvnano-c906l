@@ -3,7 +3,7 @@
   "configurePresets": [
     {
       "name": "c906-wsl",
-      "displayName": "SG2002 C906 (WSL)",
+      "displayName": "SG200x C906L (WSL)",
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",
@@ -18,7 +18,7 @@
     },
     {
       "name": "c906-windows",
-      "displayName": "SG2002 C906 (Windows)",
+      "displayName": "SG200x C906L (Windows)",
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",
@@ -34,7 +34,7 @@
     },
     {
       "name": "c906-wsl-gcc15",
-      "displayName": "SG2002 C906 (WSL, GCC 15)",
+      "displayName": "SG200x C906L (WSL, GCC 15)",
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",
@@ -47,7 +47,7 @@
     },
     {
       "name": "c906-wsl-gcc14",
-      "displayName": "SG2002 C906 (WSL, GCC 14 fallback)",
+      "displayName": "SG200x C906L (WSL, GCC 14 fallback)",
       "condition": {
         "type": "equals",
         "lhs": "${hostSystemName}",

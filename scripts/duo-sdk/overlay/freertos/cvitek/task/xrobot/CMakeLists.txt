@@ -30,15 +30,15 @@ target_compile_definitions(xr PUBLIC
 
 add_library(xrobot STATIC
   "${SG200X_BSP_ROOT}/User/main.cpp"
-  "${SG200X_BSP_ROOT}/sg200x-c906-xr-driver/sg200x_timebase.cpp"
-  "${SG200X_BSP_ROOT}/sg200x-c906-xr-driver/sg200x_gpio.cpp"
-  "${SG200X_BSP_ROOT}/sg200x-c906-xr-driver/sg200x_pwm.cpp"
+  "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver/sg200x_timebase.cpp"
+  "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver/sg200x_gpio.cpp"
+  "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver/sg200x_pwm.cpp"
 )
 
 target_include_directories(xrobot PRIVATE
   ${_xrobot_sdk_include_dirs}
   "${SG200X_BSP_ROOT}/User"
-  "${SG200X_BSP_ROOT}/sg200x-c906-xr-driver"
+  "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver"
 )
 target_compile_options(xrobot PRIVATE -fno-exceptions -fno-rtti)
 target_compile_options(xr PRIVATE -fno-exceptions -fno-rtti)

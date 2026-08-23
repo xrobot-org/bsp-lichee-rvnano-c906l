@@ -26,11 +26,11 @@ test -f "$SG200X_BSP_ROOT/libxr/CMakeLists.txt" || {
   echo "Initialize the libxr submodule before building." >&2
   exit 1
 }
-test -f "$SG200X_BSP_ROOT/sg200x-c906-xr-driver/sg200x_timebase.cpp" || {
+test -f "$SG200X_BSP_ROOT/sg200x-c906l-xr-driver/sg200x_timebase.cpp" || {
   echo "SG200x driver sources are missing." >&2
   exit 1
 }
-test -f "$SG200X_BSP_ROOT/sg200x-c906-xr-driver/sg200x_pwm.cpp" || {
+test -f "$SG200X_BSP_ROOT/sg200x-c906l-xr-driver/sg200x_pwm.cpp" || {
   echo "SG200x PWM driver source is missing." >&2
   exit 1
 }
