@@ -1,0 +1,94 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "c906-wsl",
+      "displayName": "SG2002 C906 (WSL)",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/wsl",
+      "cacheVariables": {
+        "SG200X_DUO_SDK_DIR": "$env{HOME}/duo-sdk-c906",
+        "SG200X_CROSS_COMPILE": "$env{HOME}/toolchains/xpack-riscv-none-elf-gcc-15.2.0-1/bin/riscv-none-elf-"
+      }
+    },
+    {
+      "name": "c906-windows",
+      "displayName": "SG2002 C906 (Windows)",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/windows",
+      "cacheVariables": {
+        "SG200X_DUO_SDK_DIR": "$env{SG200X_DUO_SDK_DIR}",
+        "SG200X_BASH": "bash",
+        "SG200X_CROSS_COMPILE": "riscv-none-embed-"
+      }
+    },
+    {
+      "name": "c906-wsl-gcc15",
+      "displayName": "SG2002 C906 (WSL, GCC 15)",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "inherits": "c906-wsl",
+      "cacheVariables": {
+        "SG200X_CROSS_COMPILE": "$env{HOME}/toolchains/xpack-riscv-none-elf-gcc-15.2.0-1/bin/riscv-none-elf-"
+      }
+    },
+    {
+      "name": "c906-wsl-gcc14",
+      "displayName": "SG2002 C906 (WSL, GCC 14 fallback)",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "inherits": "c906-wsl",
+      "cacheVariables": {
+        "SG200X_CROSS_COMPILE": "$env{HOME}/toolchains/xpack-riscv-none-elf-gcc-14.2.0-3/bin/riscv-none-elf-"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "firmware",
+      "configurePreset": "c906-wsl",
+      "targets": ["firmware"]
+    },
+    {
+      "name": "deploy",
+      "configurePreset": "c906-wsl",
+      "targets": ["deploy"]
+    },
+    {
+      "name": "firmware-windows",
+      "configurePreset": "c906-windows",
+      "targets": ["firmware"]
+    },
+    {
+      "name": "firmware-gcc15",
+      "configurePreset": "c906-wsl-gcc15",
+      "targets": ["firmware"]
+    },
+    {
+      "name": "firmware-gcc14",
+      "configurePreset": "c906-wsl-gcc14",
+      "targets": ["firmware"]
+    },
+    {
+      "name": "deploy-windows",
+      "configurePreset": "c906-windows",
+      "targets": ["deploy"]
+    }
+  ]
+}

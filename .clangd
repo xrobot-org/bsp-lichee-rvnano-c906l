@@ -1,0 +1,8 @@
+CompileFlags:
+  CompilationDatabase: build/clangd
+  Add: [--target=riscv64-unknown-elf, -march=rv64imafdc, -mabi=lp64d]
+  Remove: [-mthumb, -mcpu=*, -mfpu=*, -mfloat-abi=*]
+
+Diagnostics:
+  ClangTidy:
+    Add: [clang-analyzer-*, bugprone-*, performance-*]
