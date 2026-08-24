@@ -33,6 +33,7 @@ add_library(xrobot STATIC
   "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver/sg200x_timebase.cpp"
   "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver/sg200x_gpio.cpp"
   "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver/sg200x_pwm.cpp"
+  "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver/sg200x_dma.cpp"
   "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver/sg200x_i2c.cpp"
   "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver/sg200x_spi.cpp"
 )
