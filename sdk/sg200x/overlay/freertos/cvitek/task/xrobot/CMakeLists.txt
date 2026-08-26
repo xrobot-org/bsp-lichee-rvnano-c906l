@@ -30,20 +30,20 @@ target_compile_definitions(xr PUBLIC
 
 add_library(xrobot STATIC
   "${SG200X_BSP_ROOT}/User/main.cpp"
-  "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver/sg200x_timebase.cpp"
-  "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver/sg200x_gpio.cpp"
-  "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver/sg200x_pwm.cpp"
-  "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver/sg200x_dma.cpp"
-  "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver/sg200x_adc.cpp"
-  "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver/sg200x_watchdog.cpp"
-  "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver/sg200x_i2c.cpp"
-  "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver/sg200x_spi.cpp"
+  "${SG200X_BSP_ROOT}/driver/sg200x_timebase.cpp"
+  "${SG200X_BSP_ROOT}/driver/sg200x_gpio.cpp"
+  "${SG200X_BSP_ROOT}/driver/sg200x_pwm.cpp"
+  "${SG200X_BSP_ROOT}/driver/sg200x_dma.cpp"
+  "${SG200X_BSP_ROOT}/driver/sg200x_adc.cpp"
+  "${SG200X_BSP_ROOT}/driver/sg200x_watchdog.cpp"
+  "${SG200X_BSP_ROOT}/driver/sg200x_i2c.cpp"
+  "${SG200X_BSP_ROOT}/driver/sg200x_spi.cpp"
 )
 
 target_include_directories(xrobot PRIVATE
   ${_xrobot_sdk_include_dirs}
   "${SG200X_BSP_ROOT}/User"
-  "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver"
+  "${SG200X_BSP_ROOT}/driver"
 )
 target_compile_options(xrobot PRIVATE -fno-exceptions -fno-rtti)
 target_compile_options(xr PRIVATE -fno-exceptions -fno-rtti)

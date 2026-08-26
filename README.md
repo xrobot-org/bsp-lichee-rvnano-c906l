@@ -9,12 +9,13 @@ provided by the pinned SG200x C906L SDK source used by Sophgo's Debian integrati
 Core/                         BSP-wide non-application code
 User/                         product application entry points
 libxr/                        LibXR Git submodule
-sg200x-c906l-xr-driver/       SG200x C906L LibXR platform-driver repository
+driver/                       SG200x C906L platform drivers (part of this repo)
 scripts/                      build integration and runtime deployment tools
 sdk/sg200x/                   SDK pin, patches, overlay, and board config
 ```
 
-`sg200x-c906l-xr-driver/` is the C906L coprocessor platform-driver submodule.
+`driver/` contains the C906L coprocessor platform drivers directly in this
+repository; no separate driver submodule is required.
 
 ## Vendor SDK
 
@@ -112,7 +113,7 @@ timebase frequency. Do not read `0x7400BFF8` as a standard CLINT `mtime`: the
 SG2002 TRM marks that address range reserved, the SDK undefines non-QEMU
 `CLINT_MTIME`, and a board test showed that the MMIO access can hang. UART,
 I2C, and SPI driver work is DMA-only as specified in
-`sg200x-c906l-xr-driver/README.md`.
+`driver/README.md`.
 
 The application keeps the LED task by default. Set `SG200X_TIMEBASE_TEST=1`
 when building to run the 1024-sample CSR/API monotonicity test, or set
