@@ -138,16 +138,8 @@ on a lock-free `std::atomic<uint32_t>`, and separately executes direct
 `amoadd.w.aqrl` instructions. The boot-trace result is zero only when the
 two contended counters reach `600000` and `65536`, respectively.
 
-For the Linux C906 core, build and run the independent scheduler-preemption
-stress test on the board:
-
-```sh
-gcc -O2 -std=c11 -pthread tools/sg200x_atomic_stress.c -o atomic-stress
-./atomic-stress 4 2000000
-```
-
-This demonstrates local C906 atomic RMW behavior. It does not make a
-cross-processor atomicity claim for C906L and Linux shared DDR: the SG2002
+This does not make a cross-processor atomicity claim for C906L and Linux
+shared DDR: the SG2002
 shared-memory transport deliberately uses an uncached Linux mapping and C906L
 cache invalidate/clean operations, so that region is not hardware cache
 coherent. Use single-writer counters plus cache maintenance and release/acquire
