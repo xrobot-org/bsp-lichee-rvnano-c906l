@@ -1,4 +1,4 @@
-# This file is staged into the Vendor SDK by scripts/duo-sdk/prepare.sh.
+# This file is staged into the SG200x SDK by scripts/sg200x-sdk/prepare.sh.
 if(NOT DEFINED ENV{SG200X_BSP_ROOT})
   message(FATAL_ERROR "SG200X_BSP_ROOT is required for the XRobot SDK overlay.")
 endif()
@@ -34,6 +34,8 @@ add_library(xrobot STATIC
   "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver/sg200x_gpio.cpp"
   "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver/sg200x_pwm.cpp"
   "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver/sg200x_dma.cpp"
+  "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver/sg200x_adc.cpp"
+  "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver/sg200x_watchdog.cpp"
   "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver/sg200x_i2c.cpp"
   "${SG200X_BSP_ROOT}/sg200x-c906l-xr-driver/sg200x_spi.cpp"
 )
@@ -53,5 +55,26 @@ if(DEFINED ENV{SG200X_TIMEBASE_TEST})
 endif()
 if(DEFINED ENV{SG200X_PREEMPT_TEST})
   target_compile_definitions(xrobot PRIVATE SG200X_PREEMPT_TEST=1)
+endif()
+if(DEFINED ENV{SG200X_DMA_TEST})
+  target_compile_definitions(xrobot PRIVATE SG200X_DMA_TEST=1)
+endif()
+if(DEFINED ENV{SG200X_I2C_DMA_TEST})
+  target_compile_definitions(xrobot PRIVATE SG200X_I2C_DMA_TEST=1)
+endif()
+if(DEFINED ENV{SG200X_SPI4_TEST})
+  target_compile_definitions(xrobot PRIVATE SG200X_SPI4_TEST=1)
+endif()
+if(DEFINED ENV{SG200X_ADC_TEST})
+  target_compile_definitions(xrobot PRIVATE SG200X_ADC_TEST=1)
+endif()
+if(DEFINED ENV{SG200X_PWM_ADC_TEST})
+  target_compile_definitions(xrobot PRIVATE SG200X_PWM_ADC_TEST=1)
+endif()
+if(DEFINED ENV{SG200X_ATOMIC_TEST})
+  target_compile_definitions(xrobot PRIVATE SG200X_ATOMIC_TEST=1)
+endif()
+if(DEFINED ENV{SG200X_WATCHDOG_TEST})
+  target_compile_definitions(xrobot PRIVATE SG200X_WATCHDOG_TEST=1)
 endif()
 target_link_libraries(xrobot PUBLIC xr kernel stdc++)
