@@ -11,13 +11,14 @@ User/                         product application entry points
 libxr/                        LibXR Git submodule
 sg200x-c906l-xr-driver/       SG200x C906L LibXR platform-driver repository
 scripts/                      build integration and runtime deployment tools
+sdk/sg200x/                   SDK pin, patches, overlay, and board config
 ```
 
 `sg200x-c906l-xr-driver/` is the C906L coprocessor platform-driver submodule.
 
 ## Vendor SDK
 
-`scripts/sg200x-sdk/sdk.env` pins the same SG200x SDK revision used by
+`sdk/sg200x/sdk.env` pins the same SG200x SDK revision used by
 `D:/Projects/sophgo-sg200x-debian/components/sg2002-ipc`. The SDK owns the
 C906 port, including `freertos/cvitek/arch/riscv64/src/start.S`, the T-Head
 C906 FreeRTOS extension, and `cv181x_lscript.ld`. The upstream repository is
@@ -45,8 +46,9 @@ remoteproc loads it as `/lib/firmware/c906-mcu.elf`. The BIN is only for an
 image builder that injects it into the FSBL/FIP boot path.
 
 The project-owned changes applied during staging are limited to the patch
-files under `scripts/sg200x-sdk/patches/` and the overlay under
-`scripts/sg200x-sdk/overlay/`. Do not edit generated files under
+files under `sdk/sg200x/patches/` and the overlay under
+`sdk/sg200x/overlay/`. Board configuration lives under
+`sdk/sg200x/licheervnano/`. Do not edit generated files under
 `build/sdk-worktree`; change the corresponding project patch or overlay
 instead.
 

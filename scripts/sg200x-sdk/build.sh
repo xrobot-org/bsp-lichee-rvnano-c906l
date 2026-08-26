@@ -4,7 +4,8 @@ set -euo pipefail
 
 port_root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 bsp_root=$(cd "$port_root/../.." && pwd)
-source "$port_root/sdk.env"
+sdk_assets=$bsp_root/sdk/sg200x
+source "$sdk_assets/sdk.env"
 
 sdk_source_dir=${SG200X_SDK_DIR:-}
 output_dir=${OUTPUT_DIR:-$bsp_root/build/firmware}
@@ -46,9 +47,9 @@ stage_licheervnano_environment() {
 
   rm -rf "$rtos_env_dir"
   mkdir -p "$map_output"
-  cp "$port_root/licheervnano/rtos.config" "$rtos_env_dir/.config"
+  cp "$sdk_assets/licheervnano/rtos.config" "$rtos_env_dir/.config"
   python3 "$sdk_dir/build/scripts/mmap_conv.py" --type ld \
-    "$port_root/licheervnano/memmap.py" "$map_output/cvi_board_memmap.ld"
+    "$sdk_assets/licheervnano/memmap.py" "$map_output/cvi_board_memmap.ld"
 }
 
 export_compile_commands() {

@@ -9,6 +9,7 @@ fi
 
 port_root=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 : "${SG200X_BSP_ROOT:?build.sh must set SG200X_BSP_ROOT}"
+sdk_assets=$SG200X_BSP_ROOT/sdk/sg200x
 sdk_dir=$(cd "$1" && pwd)
 build_root=$(cd "$SG200X_BSP_ROOT/build" && pwd)
 case "$sdk_dir" in
@@ -18,9 +19,9 @@ case "$sdk_dir" in
     exit 1
     ;;
 esac
-patch_file=$port_root/patches/0001-add-xrobot-task.patch
-toolchain_patch_file=$port_root/patches/0003-windows-toolchain.patch
-runtime_patch_file=$port_root/patches/0002-run-cxx-constructors.patch
+patch_file=$sdk_assets/patches/0001-add-xrobot-task.patch
+toolchain_patch_file=$sdk_assets/patches/0003-windows-toolchain.patch
+runtime_patch_file=$sdk_assets/patches/0002-run-cxx-constructors.patch
 
 test -d "$sdk_dir/.git" || {
   echo "SDK staging directory is not an initialized disposable worktree: $sdk_dir" >&2
@@ -57,7 +58,7 @@ test -f "$SG200X_BSP_ROOT/sg200x-c906l-xr-driver/sg200x_mmio.hpp" || {
   exit 1
 }
 
-stage_dir "$port_root/overlay/freertos/cvitek/task/xrobot" \
+stage_dir "$sdk_assets/overlay/freertos/cvitek/task/xrobot" \
   "$sdk_dir/freertos/cvitek/task/xrobot"
 
 if git -C "$sdk_dir" apply --check "$patch_file" >/dev/null 2>&1; then
