@@ -10,10 +10,6 @@ class SG200XWatchdog final : public Watchdog
   enum class Instance : uint8_t { WDT0 = 0u, WDT1, WDT2 };
   enum class ResetTarget : uint8_t { CPU = 0u, SYSTEM };
   enum class ResponseMode : uint8_t { RESET = 0u, INTERRUPT_THEN_RESET };
-  static constexpr uintptr_t WDT0_BASE = 0x03010000u;
-  static constexpr uintptr_t WDT1_BASE = 0x03011000u;
-  static constexpr uintptr_t WDT2_BASE = 0x03012000u;
-  static constexpr uintptr_t TOP_BASE = 0x03000000u;
   static constexpr uint32_t DEFAULT_CLOCK_HZ = 25000000u;
   static constexpr uint32_t XTAL32K_HZ = 32768u;
   static constexpr uint32_t C906L_WDT_IRQ = 39u;
@@ -29,8 +25,12 @@ class SG200XWatchdog final : public Watchdog
   [[nodiscard]] bool IsValid() const noexcept { return base_ != 0u; }
   [[nodiscard]] bool IsRunning() const noexcept { return running_; }
   [[nodiscard]] uint32_t ActualTimeoutMs() const noexcept { return actual_timeout_ms_; }
-  [[nodiscard]] uint8_t TimeoutTop() const noexcept { return timeout_top_; }
+ [[nodiscard]] uint8_t TimeoutTop() const noexcept { return timeout_top_; }
  private:
+  static constexpr uintptr_t WDT0_BASE = 0x03010000u;
+  static constexpr uintptr_t WDT1_BASE = 0x03011000u;
+  static constexpr uintptr_t WDT2_BASE = 0x03012000u;
+  static constexpr uintptr_t TOP_BASE = 0x03000000u;
   static constexpr uint32_t REG_CR = 0x00u;
   static constexpr uint32_t REG_TORR = 0x04u;
   static constexpr uint32_t REG_CRR = 0x0Cu;

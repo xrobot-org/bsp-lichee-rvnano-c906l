@@ -47,11 +47,6 @@ class SG200XPWM final : public PWM
     uint8_t function = 0u;
   };
 
-  static constexpr uintptr_t PWM0_BASE = 0x03060000u;
-  static constexpr uintptr_t PWM1_BASE = 0x03061000u;
-  static constexpr uintptr_t PWM2_BASE = 0x03062000u;
-  static constexpr uintptr_t PWM3_BASE = 0x03063000u;
-  static constexpr uintptr_t PINMUX_BASE = 0x03001000u;
   static constexpr uint32_t PWM_CLOCK_HZ = 100000000u;
   static constexpr uint32_t MAX_PERIOD_TICKS = 0x3FFFFFFFu;
   static constexpr uint8_t CHANNEL_COUNT = 16u;
@@ -72,12 +67,14 @@ class SG200XPWM final : public PWM
   /** @brief Set output polarity while the channel is stopped. */
   ErrorCode SetPolarity(bool active_high);
 
-  [[nodiscard]] bool IsValid() const noexcept { return pwm_base_ != 0u; }
+  [[nodiscard]] bool IsValid() const noexcept { return base_ != 0u; }
   [[nodiscard]] uint32_t ClockHz() const noexcept { return clock_hz_; }
   [[nodiscard]] uint32_t PeriodTicks() const noexcept { return period_ticks_; }
   [[nodiscard]] float DutyCycle() const noexcept { return duty_cycle_; }
 
  private:
+  static constexpr uintptr_t PWM0_BASE = 0x03060000u;
+  static constexpr uintptr_t PINMUX_BASE = 0x03001000u;
   static constexpr uint32_t REG_HLPERIOD = 0x00u;
   static constexpr uint32_t REG_PERIOD = 0x04u;
   static constexpr uint32_t REG_POLARITY = 0x40u;
@@ -85,11 +82,9 @@ class SG200XPWM final : public PWM
   static constexpr uint32_t REG_PWMUPDATE = 0x4Cu;
   static constexpr uint32_t REG_PWM_OE = 0xD0u;
   static constexpr uint32_t CHANNEL_STRIDE = 0x08u;
-
   static constexpr uint32_t PINMUX_FUNCTION_MASK = 0x7u;
   static constexpr uintptr_t CONTROLLER_STRIDE = 0x1000u;
   static constexpr uint8_t CHANNELS_PER_CONTROLLER = 4u;
-
   static uintptr_t ControllerBase(uint8_t channel) noexcept;
   static uint8_t LocalChannel(uint8_t channel) noexcept;
   static void ConfigurePinmux(const PinmuxConfiguration& pinmux) noexcept;
@@ -98,7 +93,7 @@ class SG200XPWM final : public PWM
   void WritePeriodRegisters() noexcept;
   void ApplyDynamicUpdate() noexcept;
 
-  uintptr_t pwm_base_ = 0u;
+  uintptr_t base_ = 0u;
   uint8_t channel_ = 0u;
   uint32_t channel_mask_ = 0u;
   uint32_t clock_hz_ = 0u;

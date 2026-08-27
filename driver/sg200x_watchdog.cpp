@@ -1,5 +1,6 @@
 #include "sg200x_watchdog.hpp"
 #include "sg200x_mmio.hpp"
+#include "sg200x_rcc.hpp"
 namespace LibXR
 {
 uintptr_t SG200XWatchdog::InstanceBase(Instance instance) noexcept
@@ -45,6 +46,8 @@ SG200XWatchdog::SG200XWatchdog(Instance instance, uint32_t timeout_ms, uint32_t 
 {
   if (!IsValid() || !IsSupportedClock(clock_hz_) ||
       !IsSupportedResetTarget(reset_target_) || !IsSupportedResponseMode(response_mode_) ||
+      SG200XRCC::Instance().PreparePeripheral(SG200XRCC::PeripheralId::Watchdog) !=
+          ErrorCode::OK ||
       SetConfig({timeout_ms, feed_ms}) != ErrorCode::OK || Start() != ErrorCode::OK)
   {
     base_ = 0u;
@@ -111,8 +114,6 @@ ErrorCode SG200XWatchdog::SetConfig(const Configuration& config)
 }
 void SG200XWatchdog::ConfigureResetRoute() const noexcept
 {
-  // Enable the watchdog reset request, then select either the C906L CPU or the
-  // whole system for this watchdog instance.
   Register32(TOP_BASE, TOP_SYS_CTRL_OFFSET) |= 1u << 2u;
   auto& top = Register32(TOP_BASE, REG_TOP_WDT_CTRL);
   const uint32_t system_bit = reset_route_bit_;

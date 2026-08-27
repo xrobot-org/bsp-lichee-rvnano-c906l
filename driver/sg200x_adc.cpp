@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "sg200x_mmio.hpp"
+#include "sg200x_rcc.hpp"
 
 namespace LibXR
 {
@@ -101,10 +102,10 @@ ErrorCode SG200XADC::ReadRaw(uint8_t index, uint16_t& value) noexcept
   ErrorCode result = WaitIdle(base);
   if (result == ErrorCode::OK)
   {
-    uint32_t control = Register32(base, REG_CTRL);
-    control &= ~(CHANNEL_SELECT_MASK | TRIGGER);
     // The TRM exposes a one-hot select in bits 7:4. This is also the encoding
     // used by the Linux cvitek SARADC driver: channel 1 -> bit 5, etc.
+    uint32_t control = Register32(base, REG_CTRL);
+    control &= ~(CHANNEL_SELECT_MASK | TRIGGER);
     control |= 1u << (4u + domain_channel);
     Register32(base, REG_CTRL) = control;
     Register32(base, REG_INTR_CLR) = 1u;
@@ -148,9 +149,9 @@ uint8_t SG200XADC::DomainChannel(uint8_t channel) noexcept
 
 void SG200XADC::EnableClocksAndReset() noexcept
 {
-  // The active SARADC clock is gated in CLKGEN. RTC SARADC uses the RTC
-  // domain's XTAL-selected clock and its own reset control.
-  Register32(CLOCK_GEN_BASE, 0x000u) |= CLOCK_SARADC;
+  // The active-domain gate/reset belongs to the shared TOP resource model.
+  // RTC SARADC has an additional domain-local clock/reset that remains here.
+  (void)SG200XRCC::Instance().PreparePeripheral(SG200XRCC::PeripheralId::SarAdc);
   Register32(RTC_CTRL_BASE, RTC_REG_CLOCK_MUX) &= ~RTC_SARADC_CLOCK_MUX;
   Register32(RTC_CTRL_BASE, RTC_REG_RESET) |= RTC_SARADC_RESETN;
 }
@@ -167,7 +168,6 @@ void SG200XADC::ConfigureDomain(uintptr_t base) const noexcept
   Register32(base, REG_CYC_SET) = cycles;
   Register32(base, REG_INTR_EN) = 0u;
   Register32(base, REG_INTR_CLR) = 1u;
-
   uint32_t test = Register32(base, REG_TEST);
   test = (test & ~TEST_REFERENCE_MASK) |
          (static_cast<uint32_t>(reference_) << TEST_REFERENCE_SHIFT);

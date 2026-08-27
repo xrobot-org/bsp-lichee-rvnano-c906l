@@ -66,7 +66,6 @@ class SG200XADC final
 
   static constexpr uintptr_t ACTIVE_BASE = 0x030F0000u;
   static constexpr uintptr_t RTC_BASE = 0x0502C000u;
-  static constexpr uintptr_t CLOCK_GEN_BASE = 0x03002000u;
   static constexpr uintptr_t RTC_CTRL_BASE = 0x05025000u;
   static constexpr uint32_t CHANNEL_COUNT = 6u;
   static constexpr uint16_t MAX_RAW = 4095u;
@@ -101,7 +100,6 @@ class SG200XADC final
   static constexpr uint32_t RESULT_VALID = 1u << 15u;
   static constexpr uint32_t CHANNEL_SELECT_MASK = 0xFu << 4u;
   static constexpr uint32_t TRIGGER = 1u << 0u;
-  static constexpr uint32_t CLOCK_SARADC = 1u << 10u;
   static constexpr uint32_t RTC_SARADC_RESETN = 1u << 17u;
   static constexpr uint32_t RTC_SARADC_CLOCK_MUX = 1u << 20u;
   static constexpr uint32_t TEST_REFERENCE_MASK = 1u << 2u;
@@ -113,7 +111,6 @@ class SG200XADC final
   static constexpr uint32_t CYCLE_SETTLE_DEFAULT = 0x0Fu;
   static constexpr uint32_t CYCLE_SAMPLE_DEFAULT = 0x03u << 8u;
   static constexpr uint32_t CYCLE_COMPARE_DEFAULT = 0x0Bu << 16u;
-
   static uintptr_t DomainBase(uint8_t channel) noexcept;
   static uint8_t DomainChannel(uint8_t channel) noexcept;
   static void EnableClocksAndReset() noexcept;

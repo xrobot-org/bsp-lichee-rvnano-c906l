@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "sg200x_mmio.hpp"
+#include "sg200x_rcc.hpp"
 
 namespace LibXR
 {
@@ -44,13 +45,24 @@ SG200XPWM::SG200XPWM(uint8_t channel, uint32_t clock_hz, PinmuxConfiguration pin
 {
   if (channel_ >= CHANNEL_COUNT || clock_hz_ == 0u)
   {
-    pwm_base_ = 0u;
+    return;
+  }
+  const auto peripheral = static_cast<SG200XRCC::PeripheralId>(
+      static_cast<uint8_t>(SG200XRCC::PeripheralId::Pwm0) +
+      channel_ / CHANNEL_PER_CONTROLLER);
+  if (SG200XRCC::Instance().PreparePeripheral(peripheral) != ErrorCode::OK)
+  {
     return;
   }
 
-  pwm_base_ = ControllerBase(channel_);
+  base_ = ControllerBase(channel_);
   channel_mask_ = static_cast<uint32_t>(1u) << LocalChannel(channel_);
   ConfigurePinmux(pinmux_);
+}
+
+uint8_t SG200XPWM::LocalChannel(uint8_t channel) noexcept
+{
+  return static_cast<uint8_t>(channel % CHANNEL_PER_CONTROLLER);
 }
 
 uintptr_t SG200XPWM::ControllerBase(uint8_t channel) noexcept
@@ -61,11 +73,6 @@ uintptr_t SG200XPWM::ControllerBase(uint8_t channel) noexcept
   }
   return PWM0_BASE +
          (static_cast<uintptr_t>(channel / CHANNEL_PER_CONTROLLER) * CONTROLLER_STRIDE);
-}
-
-uint8_t SG200XPWM::LocalChannel(uint8_t channel) noexcept
-{
-  return static_cast<uint8_t>(channel % CHANNEL_PER_CONTROLLER);
 }
 
 void SG200XPWM::ConfigurePinmux(const PinmuxConfiguration& pinmux) noexcept
@@ -98,15 +105,14 @@ uint32_t SG200XPWM::DutyToHighTicks(float duty, uint32_t period) noexcept
 void SG200XPWM::WritePeriodRegisters() noexcept
 {
   const uintptr_t channel_base =
-      pwm_base_ + static_cast<uintptr_t>(LocalChannel(channel_)) * CHANNEL_STRIDE;
-  Register32(pwm_base_, channel_base - pwm_base_ + REG_HLPERIOD) =
-      period_ticks_ - high_ticks_;
-  Register32(pwm_base_, channel_base - pwm_base_ + REG_PERIOD) = period_ticks_;
+      base_ + static_cast<uintptr_t>(LocalChannel(channel_)) * CHANNEL_STRIDE;
+  Register32(base_, channel_base - base_ + REG_HLPERIOD) = period_ticks_ - high_ticks_;
+  Register32(base_, channel_base - base_ + REG_PERIOD) = period_ticks_;
 }
 
 void SG200XPWM::ApplyDynamicUpdate() noexcept
 {
-  auto& update = Register32(pwm_base_, REG_PWMUPDATE);
+  auto& update = Register32(base_, REG_PWMUPDATE);
   update |= channel_mask_;
   update &= ~channel_mask_;
 }
@@ -169,13 +175,11 @@ ErrorCode SG200XPWM::Enable()
     return ErrorCode::STATE_ERR;
   }
 
-  auto& polarity = Register32(pwm_base_, REG_POLARITY);
+  auto& polarity = Register32(base_, REG_POLARITY);
   polarity &= ~channel_mask_;
-
-  auto& start = Register32(pwm_base_, REG_PWMSTART);
+  auto& start = Register32(base_, REG_PWMSTART);
   start &= ~channel_mask_;
-
-  auto& output_enable = Register32(pwm_base_, REG_PWM_OE);
+  auto& output_enable = Register32(base_, REG_PWM_OE);
   output_enable |= channel_mask_;
   start |= channel_mask_;
   enabled_ = true;
@@ -189,8 +193,8 @@ ErrorCode SG200XPWM::Disable()
     return ErrorCode::ARG_ERR;
   }
 
-  Register32(pwm_base_, REG_PWM_OE) &= ~channel_mask_;
-  Register32(pwm_base_, REG_PWMSTART) &= ~channel_mask_;
+  Register32(base_, REG_PWM_OE) &= ~channel_mask_;
+  Register32(base_, REG_PWMSTART) &= ~channel_mask_;
   enabled_ = false;
   return ErrorCode::OK;
 }
