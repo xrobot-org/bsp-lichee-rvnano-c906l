@@ -25,11 +25,6 @@ class SG200XGPIO final : public GPIO
     D,
   };
 
-  static constexpr uintptr_t GPIO0_BASE = 0x03020000u;
-  static constexpr uintptr_t GPIO1_BASE = 0x03021000u;
-  static constexpr uintptr_t GPIO2_BASE = 0x03022000u;
-  static constexpr uintptr_t GPIO3_BASE = 0x03023000u;
-  static constexpr uintptr_t PINMUX_BASE = 0x03001000u;
   static constexpr uint32_t GPIO0_IRQ = 41u;
   static constexpr uint32_t GPIO1_IRQ = 42u;
   static constexpr uint32_t GPIO2_IRQ = 43u;
@@ -56,7 +51,6 @@ class SG200XGPIO final : public GPIO
   static constexpr uint32_t REG_INTSTATUS = 0x40u;
   static constexpr uint32_t REG_EOI = 0x4Cu;
   static constexpr uint32_t REG_EXT_PORTA = 0x50u;
-
   static constexpr uint8_t CONTROLLER_COUNT = 4u;
   static constexpr uint8_t PIN_COUNT = 32u;
 

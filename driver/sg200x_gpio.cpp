@@ -13,6 +13,12 @@ namespace LibXR
 {
 namespace
 {
+constexpr uintptr_t GPIO0_BASE = 0x03020000u;
+constexpr uintptr_t GPIO1_BASE = 0x03021000u;
+constexpr uintptr_t GPIO2_BASE = 0x03022000u;
+constexpr uintptr_t GPIO3_BASE = 0x03023000u;
+constexpr uintptr_t PINMUX_BASE = 0x03001000u;
+
 void ConfigurePinmux(uint32_t offset)
 {
   if (offset == SG200XGPIO::INVALID_PINMUX)
@@ -20,7 +26,7 @@ void ConfigurePinmux(uint32_t offset)
     return;
   }
 
-  auto& reg = Register32(SG200XGPIO::PINMUX_BASE, offset);
+  auto& reg = Register32(PINMUX_BASE, offset);
   reg = (reg & ~0x7u) | 3u;
 }
 
@@ -94,7 +100,8 @@ uint32_t SG200XGPIO::DefaultIrq(uint8_t controller) noexcept
   return GPIO0_IRQ + controller;
 }
 
-SG200XGPIO::SG200XGPIO(Bank bank, uint8_t pin) : gpio_base_(BankBase(bank)), pin_(pin)
+SG200XGPIO::SG200XGPIO(Bank bank, uint8_t pin)
+    : gpio_base_(BankBase(bank)), pin_(pin)
 {
   const uint8_t controller = ControllerIndex(gpio_base_);
   if (controller >= CONTROLLER_COUNT || pin_ >= PIN_COUNT)
@@ -123,24 +130,21 @@ void SG200XGPIO::Write(bool value)
 
   ConfigurePinmux(pinmux_offset_);
 
-  auto& direction = Register32(gpio_base_, REG_DDR);
   if (direction_ == Direction::OUTPUT_OPEN_DRAIN && value)
   {
     // An open-drain high level is released by switching the pin to input.
-    direction &= ~pin_mask_;
+    Register32(gpio_base_, REG_DDR) &= ~pin_mask_;
   }
   else if (direction_ == Direction::OUTPUT_OPEN_DRAIN ||
            direction_ == Direction::OUTPUT_PUSH_PULL)
   {
-    direction |= pin_mask_;
+    Register32(gpio_base_, REG_DDR) |= pin_mask_;
   }
 
   // Configure output-enable before changing the data latch.  This is the
   // sequence used by Sophgo's C906 GPIO helper and avoids a transient/ignored
   // write on the DesignWare GPIO block.
   auto& data = Register32(gpio_base_, REG_DR);
-  // The TRM specifies that DR reads back the output latch, so preserve the
-  // other GPIO bits when changing this pin.
   data = (data & ~pin_mask_) | (value ? pin_mask_ : 0u);
 }
 
@@ -170,41 +174,35 @@ ErrorCode SG200XGPIO::SetConfig(Configuration config)
   ConfigurePinmux(pinmux_offset_);
 
   direction_ = config.direction;
-  auto& interrupt_enable = Register32(gpio_base_, REG_INTEN);
-  auto& interrupt_mask = Register32(gpio_base_, REG_INTMASK);
-  auto& interrupt_type = Register32(gpio_base_, REG_INTTYPE_LEVEL);
-  auto& interrupt_polarity = Register32(gpio_base_, REG_INT_POLARITY);
-  auto& direction = Register32(gpio_base_, REG_DDR);
-
   interrupt_enabled_ = false;
-  interrupt_enable &= ~pin_mask_;
-  interrupt_mask |= pin_mask_;
+  Register32(gpio_base_, REG_INTEN) &= ~pin_mask_;
+  Register32(gpio_base_, REG_INTMASK) |= pin_mask_;
   Register32(gpio_base_, REG_EOI) = pin_mask_;
 
   switch (config.direction)
   {
     case Direction::INPUT:
-      direction &= ~pin_mask_;
-      interrupt_type &= ~pin_mask_;
+      Register32(gpio_base_, REG_DDR) &= ~pin_mask_;
+      Register32(gpio_base_, REG_INTTYPE_LEVEL) &= ~pin_mask_;
       break;
     case Direction::OUTPUT_PUSH_PULL:
-      direction |= pin_mask_;
-      interrupt_type &= ~pin_mask_;
+      Register32(gpio_base_, REG_DDR) |= pin_mask_;
+      Register32(gpio_base_, REG_INTTYPE_LEVEL) &= ~pin_mask_;
       break;
     case Direction::OUTPUT_OPEN_DRAIN:
-      direction |= pin_mask_;
-      interrupt_type &= ~pin_mask_;
+      Register32(gpio_base_, REG_DDR) |= pin_mask_;
+      Register32(gpio_base_, REG_INTTYPE_LEVEL) &= ~pin_mask_;
       Register32(gpio_base_, REG_DR) &= ~pin_mask_;
       break;
     case Direction::RISING_INTERRUPT:
-      direction &= ~pin_mask_;
-      interrupt_type |= pin_mask_;
-      interrupt_polarity |= pin_mask_;
+      Register32(gpio_base_, REG_DDR) &= ~pin_mask_;
+      Register32(gpio_base_, REG_INTTYPE_LEVEL) |= pin_mask_;
+      Register32(gpio_base_, REG_INT_POLARITY) |= pin_mask_;
       break;
     case Direction::FALL_INTERRUPT:
-      direction &= ~pin_mask_;
-      interrupt_type |= pin_mask_;
-      interrupt_polarity &= ~pin_mask_;
+      Register32(gpio_base_, REG_DDR) &= ~pin_mask_;
+      Register32(gpio_base_, REG_INTTYPE_LEVEL) |= pin_mask_;
+      Register32(gpio_base_, REG_INT_POLARITY) &= ~pin_mask_;
       break;
     case Direction::FALL_RISING_INTERRUPT:
       return ErrorCode::NOT_SUPPORT;
