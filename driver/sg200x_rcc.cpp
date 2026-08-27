@@ -1,5 +1,7 @@
 #include "sg200x_rcc.hpp"
 
+#include <array>
+
 #include "sg200x_mmio.hpp"
 
 namespace LibXR
@@ -8,46 +10,85 @@ namespace
 {
 constexpr uintptr_t CLOCK_GEN_BASE = 0x03002000u;
 constexpr uintptr_t RESET_CTRL_BASE = 0x03003000u;
-constexpr uint8_t MAX_CLOCK_DEPTH = 8u;
+constexpr uintptr_t MSTATUS_MIE = 1u << 3u;
+
+class InterruptGuard final
+{
+ public:
+  InterruptGuard() noexcept
+  {
+    asm volatile("csrrc %0, mstatus, %1" : "=r"(mstatus_) : "r"(MSTATUS_MIE)
+                 : "memory");
+  }
+
+  ~InterruptGuard()
+  {
+    if ((mstatus_ & MSTATUS_MIE) != 0u)
+    {
+      asm volatile("csrs mstatus, %0" : : "r"(MSTATUS_MIE) : "memory");
+    }
+  }
+
+  InterruptGuard(const InterruptGuard&) = delete;
+  InterruptGuard& operator=(const InterruptGuard&) = delete;
+
+ private:
+  uintptr_t mstatus_ = 0u;
+};
+
+void IoFence() noexcept { asm volatile("fence iorw, iorw" ::: "memory"); }
 
 [[nodiscard]] constexpr uint32_t Mask(uint8_t width) noexcept
 {
-  return width == 0u ? 0u
-                     : (width >= 32u ? UINT32_MAX : (static_cast<uint32_t>(1u) << width) - 1u);
+  return width == 0u
+             ? 0u
+             : (width >= 32u ? UINT32_MAX
+                             : (static_cast<uint32_t>(1u) << width) - 1u);
 }
 
-[[nodiscard]] uint32_t ReadField(const SG200XClockTree::RegisterField& field) noexcept
+[[nodiscard]] uint32_t ReadField(
+    const SG200XClockTree::RegisterField& field) noexcept
 {
-  if (!field.Exists() || field.width == 0u)
+  if (!SG200XClockTree::IsFieldWellFormed(field) || !field.Exists())
   {
     return 0u;
   }
-  return (Register32(CLOCK_GEN_BASE + field.offset) >> field.shift) & Mask(field.width);
+  return (Register32(CLOCK_GEN_BASE + field.offset) >> field.shift) &
+         Mask(field.width);
 }
 
-void SetField(const SG200XClockTree::RegisterField& field, bool enabled) noexcept
+[[nodiscard]] bool SetField(const SG200XClockTree::RegisterField& field,
+                            bool enabled) noexcept
 {
-  if (!field.Exists() || field.width != 1u)
+  if (!SG200XClockTree::IsFieldWellFormed(field) || !field.Exists() ||
+      field.width != 1u)
   {
-    return;
+    return false;
   }
   auto& value = Register32(CLOCK_GEN_BASE + field.offset);
   const uint32_t bit = static_cast<uint32_t>(1u) << field.shift;
   value = enabled ? value | bit : value & ~bit;
+  IoFence();
+  return (value & bit) == (enabled ? bit : 0u);
 }
 
-void WriteField(const SG200XClockTree::RegisterField& field, uint32_t value) noexcept
+[[nodiscard]] bool WriteField(const SG200XClockTree::RegisterField& field,
+                              uint32_t value) noexcept
 {
-  if (!field.Exists() || field.width == 0u)
+  if (!SG200XClockTree::IsFieldWellFormed(field) || !field.Exists() ||
+      value > Mask(field.width))
   {
-    return;
+    return false;
   }
   auto& reg = Register32(CLOCK_GEN_BASE + field.offset);
   const uint32_t field_mask = Mask(field.width) << field.shift;
-  reg = (reg & ~field_mask) | ((value & Mask(field.width)) << field.shift);
+  reg = (reg & ~field_mask) | (value << field.shift);
+  IoFence();
+  return ((reg & field_mask) >> field.shift) == value;
 }
 
-[[nodiscard]] uint32_t DividerValue(const SG200XClockTree::Divider& divider) noexcept
+[[nodiscard]] uint32_t DividerValue(
+    const SG200XClockTree::Divider& divider) noexcept
 {
   if (!divider.Exists())
   {
@@ -55,8 +96,6 @@ void WriteField(const SG200XClockTree::RegisterField& field, uint32_t value) noe
   }
   const uint32_t value = Register32(CLOCK_GEN_BASE + divider.field.offset);
   // All described CV181x mux/divider branches use bit 3 as their valid flag.
-  // Before Linux has programmed a branch, its provider reports the documented
-  // reset value rather than the uninitialised divider field.
   if (divider.reset_value != 0u && (value & Bit(3u)) == 0u)
   {
     return divider.reset_value;
@@ -79,7 +118,8 @@ void WriteField(const SG200XClockTree::RegisterField& field, uint32_t value) noe
   return static_cast<uint32_t>(numerator / (pre_divider * post_divider));
 }
 
-[[nodiscard]] uint8_t ActiveParentIndex(const SG200XClockTree::ClockNode& node) noexcept
+[[nodiscard]] uint8_t ActiveParentIndex(
+    const SG200XClockTree::ClockNode& node) noexcept
 {
   using NodeKind = SG200XClockTree::NodeKind;
   if (node.kind == NodeKind::Gate)
@@ -108,32 +148,108 @@ void WriteField(const SG200XClockTree::RegisterField& field, uint32_t value) noe
   }
   return node.bypass.Exists() ? 1u : 0u;
 }
+
+struct RegisterSnapshot
+{
+  std::array<uintptr_t, 3u> addresses{};
+  std::array<uint32_t, 3u> values{};
+  uint8_t count = 0u;
+
+  void Add(const SG200XClockTree::RegisterField& field) noexcept
+  {
+    if (!field.Exists())
+    {
+      return;
+    }
+    const uintptr_t address = CLOCK_GEN_BASE + field.offset;
+    for (uint8_t index = 0u; index < count; ++index)
+    {
+      if (addresses[index] == address)
+      {
+        return;
+      }
+    }
+    if (count < addresses.size())
+    {
+      addresses[count] = address;
+      values[count] = Register32(address);
+      ++count;
+    }
+  }
+
+  [[nodiscard]] bool Restore() const noexcept
+  {
+    for (uint8_t index = 0u; index < count; ++index)
+    {
+      Register32(addresses[index]) = values[index];
+    }
+    IoFence();
+    for (uint8_t index = 0u; index < count; ++index)
+    {
+      if (Register32(addresses[index]) != values[index])
+      {
+        return false;
+      }
+    }
+    return true;
+  }
+};
+
+[[nodiscard]] bool IsPlanRouteActive(
+    const SG200XClockTree::ClockNode& node,
+    const SG200XClockTree::ClockRatePlan& plan) noexcept
+{
+  if (ReadField(node.divider0.field) != plan.divider ||
+      (node.divider0.reset_value != 0u &&
+       (Register32(CLOCK_GEN_BASE + node.divider0.field.offset) & Bit(3u)) == 0u))
+  {
+    return false;
+  }
+  if (node.bypass.Exists() &&
+      ReadField(node.bypass) != (plan.parent_index == 0u ? 1u : 0u))
+  {
+    return false;
+  }
+  if (plan.parent_index != 0u && node.source_select.Exists())
+  {
+    const uint8_t expected = static_cast<uint8_t>(
+        plan.parent_index - (node.bypass.Exists() ? 1u : 0u));
+    if (ReadField(node.source_select) != expected)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+[[nodiscard]] bool ResetAddressAndBit(SG200XClockTree::ResetId reset,
+                                      uintptr_t& address,
+                                      uint32_t& bit) noexcept
+{
+  if (!SG200XClockTree::IsKnownReset(reset))
+  {
+    return false;
+  }
+  const uint16_t id = static_cast<uint16_t>(reset);
+  address = RESET_CTRL_BASE + static_cast<uintptr_t>(id / 32u) * 4u;
+  bit = static_cast<uint32_t>(1u) << (id % 32u);
+  return true;
+}
 }  // namespace
 
 SG200XRCC SG200XRCC::instance_;
 
 SG200XRCC& SG200XRCC::Instance() noexcept { return instance_; }
 
-void SG200XRCC::Lock() noexcept
-{
-  while (lock_.test_and_set(std::memory_order_acquire))
-  {
-  }
-}
-
-void SG200XRCC::Unlock() noexcept { lock_.clear(std::memory_order_release); }
-
 ErrorCode SG200XRCC::EnableClock(ClockId clock) noexcept
 {
-  Lock();
-  const ErrorCode result = EnableClockPathLocked(clock, 0u);
-  Unlock();
-  return result;
+  InterruptGuard guard;
+  return EnableClockPathLocked(clock, 0u);
 }
 
 ErrorCode SG200XRCC::EnableClockPathLocked(ClockId clock, uint8_t depth) noexcept
 {
-  if (depth >= MAX_CLOCK_DEPTH)
+  if (depth >= SG200XClockTree::MAX_CLOCK_DEPTH)
   {
     return ErrorCode::STATE_ERR;
   }
@@ -167,11 +283,11 @@ ErrorCode SG200XRCC::EnableClockPathLocked(ClockId clock, uint8_t depth) noexcep
   {
     return ErrorCode::OK;
   }
-  SetField(node->gate, true);
-  return ErrorCode::OK;
+  return SetField(node->gate, true) ? ErrorCode::OK : ErrorCode::CHECK_ERR;
 }
 
-ErrorCode SG200XRCC::ApplyC906LClockPlanLocked(ClockId clock, uint8_t depth) noexcept
+ErrorCode SG200XRCC::ApplyC906LClockPlanLocked(ClockId clock,
+                                               uint8_t depth) noexcept
 {
   const SG200XClockTree::ClockRatePlan* plan =
       SG200XClockTree::DEFAULT_C906L_CLOCK_PLAN.Find(clock);
@@ -179,17 +295,9 @@ ErrorCode SG200XRCC::ApplyC906LClockPlanLocked(ClockId clock, uint8_t depth) noe
   {
     return ErrorCode::OK;
   }
-  if (depth >= MAX_CLOCK_DEPTH)
+  if (depth >= SG200XClockTree::MAX_CLOCK_DEPTH)
   {
     return ErrorCode::STATE_ERR;
-  }
-
-  const uint8_t plan_index = static_cast<uint8_t>(
-      plan - SG200XClockTree::DEFAULT_C906L_CLOCK_PLAN.clocks.data());
-  const uint8_t plan_bit = static_cast<uint8_t>(1u << plan_index);
-  if ((applied_clock_plan_mask_ & plan_bit) != 0u)
-  {
-    return ErrorCode::OK;
   }
 
   const SG200XClockTree::ClockNode* node = SG200XClockTree::Find(clock);
@@ -208,144 +316,158 @@ ErrorCode SG200XRCC::ApplyC906LClockPlanLocked(ClockId clock, uint8_t depth) noe
   {
     return parent_result;
   }
-  // A generated plan is valid only for the exact root rate it was solved
-  // against. This catches a board image with a different PLL contract before
-  // its C906L peripheral routes are modified.
   if (ClockRateRecursive(plan->parent, static_cast<uint8_t>(depth + 1u)) !=
       plan->parent_rate_hz)
   {
     return ErrorCode::STATE_ERR;
   }
 
-  WriteField(node->divider0.field, plan->divider);
-  // CV181x divider registers report their reset-value until this valid bit is
-  // set. This mirrors the vendor clock provider's set_rate path.
-  if (node->divider0.reset_value != 0u)
+  // Do not trust software history: remote resets or another owner may have
+  // changed a managed branch since the last call.
+  if (IsPlanRouteActive(*node, *plan) &&
+      ClockRateRecursive(clock, depth) == plan->actual_rate_hz)
   {
-    Register32(CLOCK_GEN_BASE + node->divider0.field.offset) |= Bit(3u);
+    return ErrorCode::OK;
   }
 
-  if (plan->parent_index == 0u)
+  RegisterSnapshot original;
+  original.Add(node->divider0.field);
+  original.Add(node->bypass);
+  original.Add(node->source_select);
+
+  bool written = WriteField(node->divider0.field, plan->divider);
+  if (written && node->divider0.reset_value != 0u)
   {
-    if (node->bypass.Exists())
-    {
-      SetField(node->bypass, true);
-    }
+    auto& divider_register =
+        Register32(CLOCK_GEN_BASE + node->divider0.field.offset);
+    divider_register |= Bit(3u);
+    IoFence();
+    written = (divider_register & Bit(3u)) != 0u;
   }
-  else
+
+  if (written && plan->parent_index == 0u && node->bypass.Exists())
   {
-    if (node->bypass.Exists())
-    {
-      SetField(node->bypass, false);
-    }
+    written = SetField(node->bypass, true);
+  }
+  else if (written && plan->parent_index != 0u)
+  {
     if (node->source_select.Exists())
     {
       const uint8_t source_index = static_cast<uint8_t>(
           plan->parent_index - (node->bypass.Exists() ? 1u : 0u));
-      WriteField(node->source_select, source_index);
+      written = WriteField(node->source_select, source_index);
+    }
+    if (written && node->bypass.Exists())
+    {
+      written = SetField(node->bypass, false);
     }
   }
 
-  if (ClockRateRecursive(clock, depth) != plan->actual_rate_hz)
+  if (!written || !IsPlanRouteActive(*node, *plan) ||
+      ClockRateRecursive(clock, depth) != plan->actual_rate_hz)
   {
-    return ErrorCode::STATE_ERR;
+    return original.Restore() ? ErrorCode::CHECK_ERR : ErrorCode::FAILED;
   }
-  applied_clock_plan_mask_ |= plan_bit;
   return ErrorCode::OK;
 }
 
 ErrorCode SG200XRCC::ReleaseReset(ResetId reset) noexcept
 {
-  Lock();
-  ReleaseResetLocked(reset);
-  Unlock();
-  return ErrorCode::OK;
+  if (!SG200XClockTree::IsKnownReset(reset))
+  {
+    return ErrorCode::ARG_ERR;
+  }
+  InterruptGuard guard;
+  return ReleaseResetLocked(reset);
 }
 
-void SG200XRCC::ReleaseResetLocked(ResetId reset) noexcept
+ErrorCode SG200XRCC::ReleaseResetLocked(ResetId reset) noexcept
 {
-  // The cvitek reset controller deassert operation writes a one: reset lines
-  // are active low and indexed linearly across 32-bit registers.
-  const uint16_t id = static_cast<uint16_t>(reset);
-  const uintptr_t address = RESET_CTRL_BASE + static_cast<uintptr_t>(id / 32u) * 4u;
-  const uint32_t bit = static_cast<uint32_t>(1u) << (id % 32u);
-  Register32(address) |= bit;
+  uintptr_t address = 0u;
+  uint32_t bit = 0u;
+  if (!ResetAddressAndBit(reset, address, bit))
+  {
+    return ErrorCode::ARG_ERR;
+  }
+  auto& reset_register = Register32(address);
+  reset_register |= bit;
+  IoFence();
+  return (reset_register & bit) != 0u ? ErrorCode::OK : ErrorCode::CHECK_ERR;
 }
 
-void SG200XRCC::PulseResetLocked(ResetId reset) noexcept
+ErrorCode SG200XRCC::PulseResetLocked(ResetId reset) noexcept
 {
-  const uint16_t id = static_cast<uint16_t>(reset);
-  const uintptr_t address = RESET_CTRL_BASE + static_cast<uintptr_t>(id / 32u) * 4u;
-  const uint32_t bit = static_cast<uint32_t>(1u) << (id % 32u);
+  uintptr_t address = 0u;
+  uint32_t bit = 0u;
+  if (!ResetAddressAndBit(reset, address, bit))
+  {
+    return ErrorCode::ARG_ERR;
+  }
   auto& reset_register = Register32(address);
 
-  // TOP reset lines are active low. Read back both writes so the reset pulse
-  // reaches the peripheral before any subsequent MMIO initialization.
   reset_register &= ~bit;
-  asm volatile("fence iorw, iorw" ::: "memory");
-  const uint32_t asserted_state = reset_register;
-  (void)asserted_state;
+  IoFence();
+  const bool asserted = (reset_register & bit) == 0u;
+
+  // Always attempt to release the peripheral, including after a failed
+  // assertion readback, so an error does not intentionally leave it in reset.
   reset_register |= bit;
-  asm volatile("fence iorw, iorw" ::: "memory");
-  const uint32_t released_state = reset_register;
-  (void)released_state;
+  IoFence();
+  const bool released = (reset_register & bit) != 0u;
+  return asserted && released ? ErrorCode::OK : ErrorCode::CHECK_ERR;
 }
 
 ErrorCode SG200XRCC::PreparePeripheral(PeripheralId peripheral) noexcept
 {
-  const SG200XClockTree::PeripheralResources* resource = SG200XClockTree::Find(peripheral);
+  const SG200XClockTree::PeripheralResources* resource =
+      SG200XClockTree::Find(peripheral);
   if (resource == nullptr)
   {
     return ErrorCode::ARG_ERR;
   }
 
-  Lock();
+  InterruptGuard guard;
   for (uint8_t index = 0u; index < resource->clock_count; ++index)
   {
     const ErrorCode result = EnableClockPathLocked(resource->clocks[index], 0u);
     if (result != ErrorCode::OK)
     {
-      Unlock();
       return result;
     }
   }
-
-  ReleaseResetLocked(resource->reset);
-  Unlock();
-  return ErrorCode::OK;
+  return ReleaseResetLocked(resource->reset);
 }
 
 ErrorCode SG200XRCC::ResetPeripheral(PeripheralId peripheral) noexcept
 {
-  const SG200XClockTree::PeripheralResources* resource = SG200XClockTree::Find(peripheral);
+  const SG200XClockTree::PeripheralResources* resource =
+      SG200XClockTree::Find(peripheral);
   if (resource == nullptr)
   {
     return ErrorCode::ARG_ERR;
   }
 
-  Lock();
+  InterruptGuard guard;
   for (uint8_t index = 0u; index < resource->clock_count; ++index)
   {
     const ErrorCode result = EnableClockPathLocked(resource->clocks[index], 0u);
     if (result != ErrorCode::OK)
     {
-      Unlock();
       return result;
     }
   }
-  PulseResetLocked(resource->reset);
-  Unlock();
-  return ErrorCode::OK;
+  return PulseResetLocked(resource->reset);
 }
 
 uint32_t SG200XRCC::ClockRate(ClockId clock) const noexcept
 {
+  InterruptGuard guard;
   return ClockRateRecursive(clock, 0u);
 }
 
 uint32_t SG200XRCC::ClockRateRecursive(ClockId clock, uint8_t depth) const noexcept
 {
-  if (depth >= MAX_CLOCK_DEPTH)
+  if (depth >= SG200XClockTree::MAX_CLOCK_DEPTH)
   {
     return 0u;
   }
@@ -372,7 +494,8 @@ uint32_t SG200XRCC::ClockRateRecursive(ClockId clock, uint8_t depth) const noexc
   if (node->kind == SG200XClockTree::NodeKind::Gate)
   {
     return node->parents.count == 1u
-               ? ClockRateRecursive(node->parents.ids[0], static_cast<uint8_t>(depth + 1u))
+               ? ClockRateRecursive(node->parents.ids[0],
+                                    static_cast<uint8_t>(depth + 1u))
                : 0u;
   }
 
@@ -385,7 +508,6 @@ uint32_t SG200XRCC::ClockRateRecursive(ClockId clock, uint8_t depth) const noexc
   }
   else if (node->path_select.Exists())
   {
-    // The vendor driver's get_clk_sel() inverts this register bit.
     const bool uses_divider1 = ReadField(node->path_select) == 0u;
     if (uses_divider1)
     {
@@ -408,8 +530,8 @@ uint32_t SG200XRCC::ClockRateRecursive(ClockId clock, uint8_t depth) const noexc
   {
     return 0u;
   }
-  const uint32_t parent_rate =
-      ClockRateRecursive(node->parents.ids[parent_index], static_cast<uint8_t>(depth + 1u));
+  const uint32_t parent_rate = ClockRateRecursive(
+      node->parents.ids[parent_index], static_cast<uint8_t>(depth + 1u));
   if (parent_rate == 0u || divider == nullptr)
   {
     return parent_rate;

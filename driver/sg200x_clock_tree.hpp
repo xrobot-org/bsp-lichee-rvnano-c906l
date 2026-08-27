@@ -90,6 +90,7 @@ enum class PeripheralId : uint8_t
   Pwm3,
   SarAdc,
   Watchdog,
+  Count,
 };
 
 // Reset IDs use the linear active-low IDs from cv181x-resets.h. They are
@@ -120,6 +121,9 @@ inline constexpr uint32_t OSCILLATOR_HZ = 25000000u;
 // input to the consteval planner, not a request to retune the running PLL.
 inline constexpr uint32_t C906L_FPLL_HZ = 1500000000u;
 inline constexpr uint16_t NO_REGISTER = 0xFFFFu;
+inline constexpr uint16_t CLOCK_GEN_REGISTER_BYTES = 0x1000u;
+inline constexpr uint16_t RESET_LINE_COUNT = 64u;
+inline constexpr uint8_t MAX_CLOCK_DEPTH = 8u;
 
 struct RegisterField
 {
@@ -328,7 +332,7 @@ inline constexpr std::array<ClockNode, 41u> NODES{
         Divide(0x13Cu, 16u, 4u, 2u)),
 };
 
-inline constexpr std::array<PeripheralResources, 17u> PERIPHERALS{
+inline constexpr std::array<PeripheralResources, 16u> PERIPHERALS{
     PeripheralResources{PeripheralId::Sdma, {ClockId::SdmaAxi, ClockId::None}, 1u,
                         ResetId::Sdma},
     PeripheralResources{PeripheralId::Spi0, {ClockId::Spi, ClockId::ApbSpi0}, 2u,
@@ -385,6 +389,18 @@ inline constexpr std::array<PeripheralResources, 17u> PERIPHERALS{
     }
   }
   return nullptr;
+}
+
+[[nodiscard]] constexpr bool IsKnownReset(ResetId reset) noexcept
+{
+  for (const PeripheralResources& resource : PERIPHERALS)
+  {
+    if (resource.reset == reset)
+    {
+      return true;
+    }
+  }
+  return false;
 }
 
 struct ClockRatePlan
@@ -526,13 +542,34 @@ static_assert(C906L_I2C_PLAN.divider == 1u &&
                   C906L_I2C_PLAN.actual_rate_hz == 100000000u,
               "C906L I2C profile must retain its documented 100 MHz input clock");
 
-[[nodiscard]] constexpr bool IsTopologyWellFormed() noexcept
+[[nodiscard]] constexpr bool IsFieldWellFormed(const RegisterField& field) noexcept
 {
-  for (const ClockNode& node : NODES)
+  if (!field.Exists())
   {
-    for (uint8_t index = 0u; index < node.parents.count; ++index)
+    return field.shift == 0u && field.width == 0u;
+  }
+  return field.offset < CLOCK_GEN_REGISTER_BYTES &&
+         (field.offset % sizeof(uint32_t)) == 0u && field.width != 0u &&
+         field.width <= 32u && field.shift < 32u &&
+         static_cast<uint16_t>(field.shift) + field.width <= 32u;
+}
+
+[[nodiscard]] constexpr bool IsParentSetWellFormed(const ParentSet& parents) noexcept
+{
+  if (parents.count > parents.ids.size())
+  {
+    return false;
+  }
+  for (uint8_t index = 0u; index < parents.ids.size(); ++index)
+  {
+    if ((index < parents.count) != (parents.ids[index] != ClockId::None))
     {
-      if (Find(node.parents.ids[index]) == nullptr)
+      return false;
+    }
+    for (uint8_t previous = 0u; previous < index; ++previous)
+    {
+      if (parents.ids[index] != ClockId::None &&
+          parents.ids[index] == parents.ids[previous])
       {
         return false;
       }
@@ -541,6 +578,263 @@ static_assert(C906L_I2C_PLAN.divider == 1u &&
   return true;
 }
 
-static_assert(IsTopologyWellFormed(), "SG200x clock tree references an unknown parent");
+[[nodiscard]] constexpr bool IsNodeWellFormed(const ClockNode& node) noexcept
+{
+  if (node.id == ClockId::None || node.name == nullptr || node.name[0] == '\0' ||
+      !IsParentSetWellFormed(node.parents) || !IsFieldWellFormed(node.gate) ||
+      !IsFieldWellFormed(node.bypass) || !IsFieldWellFormed(node.path_select) ||
+      !IsFieldWellFormed(node.source_select) ||
+      !IsFieldWellFormed(node.divider0.field) ||
+      !IsFieldWellFormed(node.divider1.field) ||
+      (node.gate.Exists() && node.gate.width != 1u) ||
+      (node.bypass.Exists() && node.bypass.width != 1u) ||
+      (node.path_select.Exists() && node.path_select.width != 1u) ||
+      (node.divider0.reset_value > DividerMaximum(node.divider0)) ||
+      (node.divider1.reset_value > DividerMaximum(node.divider1)) ||
+      (node.divider0.reset_value != 0u && node.divider0.field.shift <= 3u &&
+       static_cast<uint16_t>(node.divider0.field.shift) +
+               node.divider0.field.width >
+           3u) ||
+      (node.divider1.reset_value != 0u && node.divider1.field.shift <= 3u &&
+       static_cast<uint16_t>(node.divider1.field.shift) +
+               node.divider1.field.width >
+           3u))
+  {
+    return false;
+  }
+
+  switch (node.kind)
+  {
+    case NodeKind::Fixed:
+      return node.parents.count == 0u && !node.gate.Exists() &&
+             !node.bypass.Exists() && !node.path_select.Exists() &&
+             !node.source_select.Exists() &&
+             node.pll_csr == NO_REGISTER && !node.divider0.Exists() &&
+             !node.divider1.Exists() && node.ownership == Ownership::RuntimeOnly;
+    case NodeKind::G6Pll:
+      return node.parents.count == 1u &&
+             node.parents.ids[0] == ClockId::Oscillator && !node.gate.Exists() &&
+             !node.bypass.Exists() && !node.path_select.Exists() &&
+             !node.source_select.Exists() && node.pll_csr != NO_REGISTER &&
+             node.pll_csr < CLOCK_GEN_REGISTER_BYTES &&
+             (node.pll_csr % sizeof(uint32_t)) == 0u && !node.divider0.Exists() &&
+             !node.divider1.Exists() && node.ownership == Ownership::RuntimeOnly;
+    case NodeKind::G2Pll:
+      return node.parents.count == 1u && !node.gate.Exists() &&
+             !node.bypass.Exists() && !node.path_select.Exists() &&
+             !node.source_select.Exists() &&
+             node.pll_csr == NO_REGISTER && !node.divider0.Exists() &&
+             !node.divider1.Exists() && node.ownership == Ownership::RuntimeOnly;
+    case NodeKind::Gate:
+      return node.parents.count == 1u && node.gate.Exists() &&
+             node.pll_csr == NO_REGISTER && !node.bypass.Exists() &&
+             !node.path_select.Exists() && !node.source_select.Exists() &&
+             !node.divider0.Exists() && !node.divider1.Exists() &&
+             node.ownership == Ownership::C906LManaged;
+    case NodeKind::MuxDividerGate:
+    {
+      const uint32_t single_path_capacity =
+          (node.bypass.Exists() ? 1u : 0u) +
+          (node.source_select.Exists()
+               ? (static_cast<uint32_t>(1u) << node.source_select.width)
+               : 1u);
+      const uint32_t dual_path_capacity =
+          2u + (node.source_select.Exists()
+                    ? (static_cast<uint32_t>(1u) << node.source_select.width)
+                    : 0u);
+      return node.parents.count != 0u && node.gate.Exists() &&
+             node.pll_csr == NO_REGISTER && node.divider0.Exists() &&
+             (!node.path_select.Exists() ||
+              (node.parents.count >= 2u && node.bypass.Exists() &&
+               node.source_select.Exists() && node.divider1.Exists() &&
+               node.parents.count <= dual_path_capacity)) &&
+             (node.path_select.Exists() ||
+              (!node.divider1.Exists() &&
+               node.parents.count <= single_path_capacity)) &&
+             node.ownership == (node.path_select.Exists()
+                                    ? Ownership::RuntimeOnly
+                                    : Ownership::C906LManaged);
+    }
+  }
+  return false;
+}
+
+[[nodiscard]] constexpr bool ReachesClock(ClockId current, ClockId target,
+                                          uint8_t depth) noexcept
+{
+  if (depth >= NODES.size())
+  {
+    return true;
+  }
+  const ClockNode* node = Find(current);
+  if (node == nullptr)
+  {
+    return false;
+  }
+  for (uint8_t index = 0u; index < node->parents.count; ++index)
+  {
+    if (node->parents.ids[index] == target ||
+        ReachesClock(node->parents.ids[index], target,
+                     static_cast<uint8_t>(depth + 1u)))
+    {
+      return true;
+    }
+  }
+  return false;
+}
+
+[[nodiscard]] constexpr bool FitsRuntimeDepth(ClockId current,
+                                              uint8_t depth) noexcept
+{
+  if (depth >= MAX_CLOCK_DEPTH)
+  {
+    return false;
+  }
+  const ClockNode* node = Find(current);
+  if (node == nullptr)
+  {
+    return false;
+  }
+  for (uint8_t index = 0u; index < node->parents.count; ++index)
+  {
+    if (!FitsRuntimeDepth(node->parents.ids[index],
+                          static_cast<uint8_t>(depth + 1u)))
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+[[nodiscard]] constexpr bool IsTopologyWellFormed() noexcept
+{
+  for (std::size_t node_index = 0u; node_index < NODES.size(); ++node_index)
+  {
+    const ClockNode& node = NODES[node_index];
+    if (!IsNodeWellFormed(node) || !FitsRuntimeDepth(node.id, 0u))
+    {
+      return false;
+    }
+    for (std::size_t previous = 0u; previous < node_index; ++previous)
+    {
+      if (NODES[previous].id == node.id)
+      {
+        return false;
+      }
+    }
+    for (uint8_t index = 0u; index < node.parents.count; ++index)
+    {
+      if (Find(node.parents.ids[index]) == nullptr ||
+          node.parents.ids[index] == node.id ||
+          ReachesClock(node.parents.ids[index], node.id, 0u))
+      {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+[[nodiscard]] constexpr bool ArePeripheralResourcesWellFormed() noexcept
+{
+  if (PERIPHERALS.size() != static_cast<std::size_t>(PeripheralId::Count))
+  {
+    return false;
+  }
+  for (std::size_t index = 0u; index < PERIPHERALS.size(); ++index)
+  {
+    const PeripheralResources& resource = PERIPHERALS[index];
+    if (static_cast<std::size_t>(resource.peripheral) != index ||
+        resource.clock_count == 0u ||
+        resource.clock_count > resource.clocks.size() ||
+        static_cast<uint16_t>(resource.reset) >= RESET_LINE_COUNT)
+    {
+      return false;
+    }
+    for (uint8_t clock_index = 0u; clock_index < resource.clocks.size(); ++clock_index)
+    {
+      if ((clock_index < resource.clock_count) !=
+              (resource.clocks[clock_index] != ClockId::None) ||
+          (clock_index < resource.clock_count &&
+           Find(resource.clocks[clock_index]) == nullptr))
+      {
+        return false;
+      }
+      for (uint8_t previous = 0u; previous < clock_index; ++previous)
+      {
+        if (resource.clocks[clock_index] != ClockId::None &&
+            resource.clocks[clock_index] == resource.clocks[previous])
+        {
+          return false;
+        }
+      }
+    }
+    for (std::size_t previous = 0u; previous < index; ++previous)
+    {
+      if (PERIPHERALS[previous].peripheral == resource.peripheral ||
+          PERIPHERALS[previous].reset == resource.reset)
+      {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+[[nodiscard]] constexpr bool IsClockPlanWellFormed() noexcept
+{
+  if (DEFAULT_C906L_CLOCK_PLAN.fpll_rate_hz != C906L_FPLL_HZ)
+  {
+    return false;
+  }
+  for (std::size_t index = 0u; index < DEFAULT_C906L_CLOCK_PLAN.clocks.size(); ++index)
+  {
+    const ClockRatePlan& plan = DEFAULT_C906L_CLOCK_PLAN.clocks[index];
+    const ClockNode* node = Find(plan.clock);
+    if (node == nullptr || node->ownership != Ownership::C906LManaged ||
+        node->kind != NodeKind::MuxDividerGate || node->path_select.Exists() ||
+        !node->divider0.Exists() || plan.parent_index >= node->parents.count ||
+        node->parents.ids[plan.parent_index] != plan.parent || plan.parent_rate_hz == 0u ||
+        plan.target_rate_hz == 0u || plan.target_rate_hz > plan.parent_rate_hz ||
+        plan.divider == 0u || plan.divider > DividerMaximum(node->divider0) ||
+        plan.actual_rate_hz != plan.parent_rate_hz / plan.divider)
+    {
+      return false;
+    }
+    for (std::size_t previous = 0u; previous < index; ++previous)
+    {
+      if (DEFAULT_C906L_CLOCK_PLAN.clocks[previous].clock == plan.clock)
+      {
+        return false;
+      }
+    }
+
+    const ClockRatePlan* parent_plan = DEFAULT_C906L_CLOCK_PLAN.Find(plan.parent);
+    if (parent_plan == nullptr && plan.parent != ClockId::Oscillator &&
+        plan.parent != ClockId::Fpll)
+    {
+      return false;
+    }
+    if (parent_plan != nullptr && parent_plan->actual_rate_hz != plan.parent_rate_hz)
+    {
+      return false;
+    }
+    if (plan.parent == ClockId::Oscillator && plan.parent_rate_hz != OSCILLATOR_HZ)
+    {
+      return false;
+    }
+    if (plan.parent == ClockId::Fpll &&
+        plan.parent_rate_hz != DEFAULT_C906L_CLOCK_PLAN.fpll_rate_hz)
+    {
+      return false;
+    }
+  }
+  return true;
+}
+
+static_assert(IsTopologyWellFormed(), "SG200x clock topology is malformed");
+static_assert(ArePeripheralResourcesWellFormed(),
+              "SG200x peripheral clock/reset resources are malformed");
+static_assert(IsClockPlanWellFormed(), "SG200x C906L clock plan is malformed");
 
 }  // namespace LibXR::SG200XClockTree

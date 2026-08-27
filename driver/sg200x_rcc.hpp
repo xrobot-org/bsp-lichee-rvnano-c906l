@@ -1,6 +1,5 @@
 #pragma once
 
-#include <atomic>
 #include <cstdint>
 
 #include "libxr_def.hpp"
@@ -72,17 +71,13 @@ class SG200XRCC final
  private:
   SG200XRCC() = default;
 
-  void Lock() noexcept;
-  void Unlock() noexcept;
   [[nodiscard]] ErrorCode EnableClockPathLocked(ClockId clock, uint8_t depth) noexcept;
   [[nodiscard]] ErrorCode ApplyC906LClockPlanLocked(ClockId clock,
                                                      uint8_t depth) noexcept;
-  void ReleaseResetLocked(ResetId reset) noexcept;
-  void PulseResetLocked(ResetId reset) noexcept;
+  [[nodiscard]] ErrorCode ReleaseResetLocked(ResetId reset) noexcept;
+  [[nodiscard]] ErrorCode PulseResetLocked(ResetId reset) noexcept;
   [[nodiscard]] uint32_t ClockRateRecursive(ClockId clock, uint8_t depth) const noexcept;
 
-  std::atomic_flag lock_ = ATOMIC_FLAG_INIT;
-  uint8_t applied_clock_plan_mask_ = 0u;
   static SG200XRCC instance_;
 };
 
