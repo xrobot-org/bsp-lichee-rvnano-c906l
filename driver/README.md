@@ -49,14 +49,43 @@ uses in its own header, so the hardware contract is visible beside the code
 that consumes it. `sg200x_mmio.hpp` only centralizes the volatile MMIO access
 cast; it does not hide chip-specific register knowledge.
 
-DMA is the only I2C/SPI data path in this platform driver. `SG200XDMAC` owns
-the SG200x eight-channel DesignWare AXI DMA controller at `0x04330000`, the
-Top remap registers, C906L DMA IRQ routing, and C906 D-cache maintenance.
-Each submitted transfer claims its DMA channels, programs its documented
-peripheral request ID, and completes through DMA/I2C interrupts. There is no
-polling data-transfer fallback. Calls from ISR context are rejected because
-they would otherwise need to claim DMA resources and establish a completion
-owner there.
+DMA is the only I2C/SPI data path in this platform driver. `SG200XDMAC` uses a
+static partition of the SG200x eight-channel DesignWare AXI DMA controller at
+`0x04330000`: Linux owns channels 0-3 and C906L owns channels 4-7. It controls
+only its partition's Top interrupt-mux fields, peripheral remap fields, channel
+registers, descriptors, and C906 D-cache maintenance. The Linux kernel/DT must
+also restrict `dw_dmac` allocation to channels 0-3; interrupt routing alone
+does not prevent a Linux client from programming an unreserved channel.
+
+`sg200x_clock_tree.hpp` is the compile-time model of the C906-visible portion
+of the actual CV181x/SG200x TOP provider: the 25 MHz oscillator, PLL roots,
+C906 cores, AXI4/AXI6 buses, RTC/ADC/timer branches, and DMA/I2C/PWM/SPI
+leaves. Its `ClockId` values match the DT binding; its descriptors retain the
+real gate, bypass, mux, divider, and reset-controller fields. `MakeRatePlan`
+is a `consteval` solver for a C906L-configurable mux/divider branch. The
+reference `DEFAULT_C906L_CLOCK_PLAN` fixes the board's FPLL input at 1.5 GHz
+and derives AXI4 300 MHz, AXI6/I2C 100 MHz, 1 MHz, and SPI 187.5 MHz from it.
+`SG200XRCC` validates that FPLL contract from the hardware CSR before applying
+only the branches required by a prepared peripheral. It never retunes a PLL or
+the clock of the running C906L core. A rate that traverses an as-yet undecoded
+fractional G2 PLL still returns zero rather than a plausible-looking guess.
+SPI is only one consumer of this provider; DMA and SARADC use the same resource
+mapping already.
+Each submitted transfer claims a C906L-owned DMA channel and programs its
+documented peripheral request ID. First initialization gracefully disables or
+aborts stale channels 4-7 without resetting the shared controller or touching
+Linux channels 0-3. Completion and error signals for channels 4-7 are removed
+from the other CPU routes and enabled through the TOP SDMA CPU2 mux field at
+`0x03000298` to the C906L PLIC source 25. The driver
+enables controller and per-channel interrupt signaling, registers that source
+through the SDK `request_irq()` API, and enables `mie.MEIE` only after the
+handler is installed. The handler consumes only latched DMA interrupt status;
+there is no completion polling fallback. `Mode::NORMAL` detaches its callback
+record after one completion. `Mode::CIRCULAR` uses a self-linked LLI, keeps the
+record armed, invalidates RX memory, and dispatches one callback for every
+completed block until explicit abort. Stop waits for hardware `CHEN` to clear
+before returning the channel to the allocation pool. Calls that need to claim
+DMA resources are rejected from ISR context.
 GPIO, timer, and PWM do not use DMA, but they still share the platform clock,
 reset, pinmux, and interrupt requirements.
 
@@ -97,24 +126,61 @@ the board's measured reference voltage when the external reference is used.
 
 ## I2C and SPI Bring-up
 
-`SG200XI2C` implements I2C0 through I2C4 as a DesignWare APB I2C master. The
-TRM's exact timing values are used only for the documented 25 MHz and 100 MHz
-input clocks, at 100 kHz or 400 kHz; pass the clock selected by board startup
-code. It supports 7-bit and 10-bit targets and repeated-start register reads.
-The constructor requires caller-owned, 16-bit-aligned DMA command and receive
+`SG200XI2C` implements I2C0 through I2C4 as a DesignWare APB I2C master. Its
+controller ID selects the RCC peripheral resources; the constructor prepares
+the gates/reset and reads the live `CLK_I2C` rate from `SG200XRCC`. Standard-
+and fast-mode timing counts are derived from that rate using the DesignWare
+compensation formula and validated against the register widths. It supports
+7-bit and 10-bit targets and repeated-start register reads. The constructor
+requires caller-owned, cache-line-aligned DMA command and receive
 staging buffers: `IC_DATA_CMD` includes read, restart, and stop command bits,
 so raw user bytes cannot be written directly by DMA. STOP_DET or TX_ABRT IRQ
-is combined with DMA completion before the LibXR operation completes.
+is combined with DMA completion before the LibXR operation completes. Invalid
+arguments, zero-length operations, active-operation `BUSY`, block timeouts,
+NACK cleanup/recovery, and BLOCK/CALLBACK/POLLING completion follow the same
+LibXR operation contract used by the STM32 drivers. The submitted operation is
+copied into the driver before hardware can complete, so asynchronous calls do
+not retain a pointer to the caller's operation wrapper. I2C transfers always
+use Normal DMA. Circular DMA is not an I2C transaction mode in STM32I2C and
+cannot autonomously repeat address, START/STOP, NACK, or arbitration handling;
+continuous sensor acquisition should schedule repeated Normal transactions.
 
 `SG200XSPI` implements SPI0 through SPI3 as a DesignWare SSI master using
-8-bit Motorola SPI frames. Its clock argument defaults to the TRM's 187.5 MHz
-`ssi_clk`. BAUDR only accepts an even divisor between 2 and 65534, so the
-driver reports `ssi_clk / 2` as the LibXR maximum and maps `DIV_1` to that
-fastest legal hardware setting. The driver owns one hardware slave-select bit
-per instance. `MemRead` and
+8-bit Motorola SPI frames. Its constructor accepts a controller ID rather than
+a clock rate; it prepares the modelled SPI/APB gates and reads the actual
+configured `CLK_SPI` rate from `SG200XRCC`, so the LibXR maximum is never a
+hard-coded 187.5 MHz assumption. BAUDR only
+accepts an even divisor between 2 and 65534, so the driver reports
+`ssi_clk / 2` as the LibXR maximum and maps `DIV_1` to that fastest legal
+hardware setting. The driver owns one hardware slave-select bit per instance.
+Like `STM32SPI`, its constructor takes cache-line-aligned RX/TX DMA buffers.
+`ReadAndWrite`, `Read`, `Write`, `MemRead`, and `MemWrite` stage arbitrary
+caller buffers through that storage; `Transfer(size)` submits the active
+internal buffers directly and switches them on successful completion.
+`MemRead` and
 `MemWrite` follow LibXR's established 8-bit register convention (read: bit 7
 set; write: bit 7 clear); devices with a different wire protocol should use
-`ReadAndWrite` directly.
+`ReadAndWrite` directly. Zero-length memory accesses complete without placing
+a command byte on the bus, matching the STM32SPI abstraction.
+
+SPI transfers use paired RX/TX DMA channels for every non-empty operation,
+including read-only and write-only calls, so the controller FIFO cannot stall.
+The instance reports `BUSY` while a transfer or its completion cleanup owns
+the hardware. DMA start failures, block-operation timeouts, and SSI errors
+disable the request paths and release both DMA channels before the instance is
+made available again. Successful DMA completion also waits for SSI `BUSY` to
+drop before deasserting chip select, preserving the final frame and CS hold
+time. DMA ownership is task-only; calls with `in_isr=true` return
+`ErrorCode::NOT_SUPPORT`.
+
+`StartCircularTransfer(size, callback)` is the STM32-style Circular extension
+for the active internal DMA buffers. It is full duplex and zero copy, accepts
+callback operations only, and reports each completed RX block from ISR
+context. The callback may call `StopCircularTransfer(true)`; stop retires TX
+before RX while SSI handshakes are still live, then disables SSI and releases
+both channels. BLOCK and POLLING Circular starts return `NOT_SUPPORT`, and a
+second start or any ordinary SPI operation returns `BUSY` until the ring is
+stopped. DMA or SSI errors shut down the ring and report one failed callback.
 
 The implementation uses the SG200x TRM for register layout and interrupt
 numbers. Board pin assignments, clock/reset ownership, and firmware loading
