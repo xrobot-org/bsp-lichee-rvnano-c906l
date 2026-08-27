@@ -13,12 +13,7 @@ float SG200XADC::Channel::Read()
   return parent_ == nullptr ? -1.0f : parent_->ReadChannel(index_);
 }
 
-SG200XADC::SG200XADC(std::initializer_list<uint8_t> channels)
-    : SG200XADC(channels, Config{})
-{
-}
-
-SG200XADC::SG200XADC(std::initializer_list<uint8_t> channels, const Config& config)
+SG200XADC::SG200XADC(std::initializer_list<uint8_t> channels, Config config)
     : reference_voltage_(config.reference_voltage),
       reference_(config.reference),
       clock_divider_(config.clock_divider),

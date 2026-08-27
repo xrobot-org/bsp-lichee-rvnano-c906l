@@ -76,8 +76,8 @@ class SG200XADC final
    *               1.5625 MHz SARADC clock from the default 25 MHz XTAL.
    */
   explicit SG200XADC(
-      std::initializer_list<uint8_t> channels = {1u, 2u, 3u, 4u, 5u, 6u});
-  SG200XADC(std::initializer_list<uint8_t> channels, const Config& config);
+      std::initializer_list<uint8_t> channels = {1u, 2u, 3u, 4u, 5u, 6u},
+      Config config = {1.8f, Reference::INTERNAL, 15u, 100000u});
 
   Channel& GetChannel(uint8_t index) noexcept;
   float ReadChannel(uint8_t index) noexcept;
