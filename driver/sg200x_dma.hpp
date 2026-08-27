@@ -45,7 +45,15 @@ class SG200XDMAC final
     BYTE = 0u,
     HALF_WORD = 1u
   };
-  using Callback = void (*)(void*, ErrorCode);
+  enum class Mode : uint8_t
+  {
+    NORMAL,
+    CIRCULAR,
+  };
+  // Completion is dispatched from the C906L PLIC handler. The consumer
+  // receives whether it is executing in ISR context so it can select the
+  // appropriate LibXR completion primitive.
+  using Callback = void (*)(void*, ErrorCode, bool in_isr);
 
   struct Transfer
   {
@@ -56,28 +64,30 @@ class SG200XDMAC final
     Request request = Request::I2C0_TX;
     Direction direction = Direction::MEMORY_TO_PERIPHERAL;
     Width width = Width::BYTE;
+    Mode mode = Mode::NORMAL;
     Callback callback = nullptr;
     void* context = nullptr;
   };
 
   static constexpr uint8_t CHANNEL_COUNT = 8u;
+  // Channels 0-3 remain owned by Linux. The TOP interrupt mux and the Linux
+  // DMAEngine driver use the same partition, so neither CPU can allocate or
+  // acknowledge the other CPU's channel state.
+  static constexpr uint32_t OWNED_CHANNEL_MASK = 0xF0u;
   static constexpr uintptr_t BASE = 0x04330000u;
-  // C906L's local PLIC assignment is SDMA_INTR_CPU2=25 in the SG200x
-  // FreeRTOS interrupt map. Linux's device-tree source 29 is a different
-  // interrupt namespace and must not be passed to request_irq() here.
-  static constexpr uint32_t IRQ = 25u;
-
+  // SDMA_INTR_CPU2 in the CV181x C906L interrupt configuration.
+  static constexpr uint8_t IRQ = 25u;
   static ErrorCode Acquire(uint8_t& channel);
-  static void Release(uint8_t channel);
+  static ErrorCode Release(uint8_t channel, bool in_isr = false);
   static ErrorCode Start(uint8_t channel, const Transfer& transfer);
-  static ErrorCode Abort(uint8_t channel);
-  static void CheckInterrupt();
+  static ErrorCode Abort(uint8_t channel, bool in_isr = false);
 
  private:
   static ErrorCode Initialize();
+  static int InterruptHandler(int irq, void* argument);
+  static void CheckInterrupt(bool in_isr);
   static void CleanForDevice(uintptr_t address, size_t size) noexcept;
   static void InvalidateForCpu(uintptr_t address, size_t size) noexcept;
-  static int InterruptHandler(int irq, void* argument);
 };
 
 }  // namespace LibXR
