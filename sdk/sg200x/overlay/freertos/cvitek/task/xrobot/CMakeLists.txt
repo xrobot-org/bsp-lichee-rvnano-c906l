@@ -31,6 +31,7 @@ target_compile_definitions(xr PUBLIC
 add_library(xrobot STATIC
   "${SG200X_BSP_ROOT}/User/main.cpp"
   "${SG200X_BSP_ROOT}/driver/sg200x_timebase.cpp"
+  "${SG200X_BSP_ROOT}/driver/sg200x_rcc.cpp"
   "${SG200X_BSP_ROOT}/driver/sg200x_gpio.cpp"
   "${SG200X_BSP_ROOT}/driver/sg200x_pwm.cpp"
   "${SG200X_BSP_ROOT}/driver/sg200x_dma.cpp"
