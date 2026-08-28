@@ -30,6 +30,7 @@ target_compile_definitions(xr PUBLIC
 
 add_library(xrobot STATIC
   "${SG200X_BSP_ROOT}/User/main.cpp"
+  "${SG200X_BSP_ROOT}/User/platform.cpp"
   "${SG200X_BSP_ROOT}/driver/sg200x_timebase.cpp"
   "${SG200X_BSP_ROOT}/driver/sg200x_rcc.cpp"
   "${SG200X_BSP_ROOT}/driver/sg200x_gpio.cpp"
@@ -51,54 +52,4 @@ target_compile_options(xr PRIVATE -fno-exceptions -fno-rtti)
 target_compile_definitions(xrobot PRIVATE
   THEAD_C906
 )
-if(DEFINED ENV{SG200X_TIMEBASE_TEST})
-  target_compile_definitions(xrobot PRIVATE SG200X_TIMEBASE_TEST=1)
-endif()
-if(DEFINED ENV{SG200X_PREEMPT_TEST})
-  target_compile_definitions(xrobot PRIVATE SG200X_PREEMPT_TEST=1)
-endif()
-if(DEFINED ENV{SG200X_DMA_TEST})
-  target_compile_definitions(xrobot PRIVATE SG200X_DMA_TEST=1)
-endif()
-if(DEFINED ENV{SG200X_I2C_DMA_TEST})
-  target_compile_definitions(xrobot PRIVATE SG200X_I2C_DMA_TEST=1)
-endif()
-if(DEFINED ENV{SG200X_I2C1_INA228_TEST})
-  target_compile_definitions(xrobot PRIVATE SG200X_I2C1_INA228_TEST=1)
-  if(DEFINED ENV{SG200X_I2C1_INA228_STRESS_ITERATIONS})
-    target_compile_definitions(xrobot PRIVATE
-      SG200X_I2C1_INA228_STRESS_ITERATIONS=$ENV{SG200X_I2C1_INA228_STRESS_ITERATIONS})
-  endif()
-endif()
-if(DEFINED ENV{SG200X_SPI4_TEST})
-  target_compile_definitions(xrobot PRIVATE SG200X_SPI4_TEST=1)
-endif()
-if(DEFINED ENV{SG200X_SPI2_TEST})
-  target_compile_definitions(xrobot PRIVATE SG200X_SPI2_TEST=1)
-endif()
-if(DEFINED ENV{SG200X_SPI2_STRESS_TEST})
-  target_compile_definitions(xrobot PRIVATE SG200X_SPI2_STRESS_TEST=1)
-  if(DEFINED ENV{SG200X_SPI2_STRESS_ITERATIONS})
-    target_compile_definitions(xrobot PRIVATE
-      SG200X_SPI2_STRESS_ITERATIONS=$ENV{SG200X_SPI2_STRESS_ITERATIONS})
-  endif()
-endif()
-if(DEFINED ENV{SG200X_SPI_INTERNAL_LOOPBACK})
-  target_compile_definitions(xrobot PRIVATE SG200X_SPI_INTERNAL_LOOPBACK=1)
-endif()
-if(DEFINED ENV{SG200X_ADC_TEST})
-  target_compile_definitions(xrobot PRIVATE SG200X_ADC_TEST=1)
-endif()
-if(DEFINED ENV{SG200X_PWM_ADC_TEST})
-  target_compile_definitions(xrobot PRIVATE SG200X_PWM_ADC_TEST=1)
-endif()
-if(DEFINED ENV{SG200X_RCC_TEST})
-  target_compile_definitions(xrobot PRIVATE SG200X_RCC_TEST=1)
-endif()
-if(DEFINED ENV{SG200X_ATOMIC_TEST})
-  target_compile_definitions(xrobot PRIVATE SG200X_ATOMIC_TEST=1)
-endif()
-if(DEFINED ENV{SG200X_WATCHDOG_TEST})
-  target_compile_definitions(xrobot PRIVATE SG200X_WATCHDOG_TEST=1)
-endif()
 target_link_libraries(xrobot PUBLIC xr kernel stdc++)
