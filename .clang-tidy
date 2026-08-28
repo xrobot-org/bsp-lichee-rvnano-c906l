@@ -1,0 +1,30 @@
+# Fixed-address MMIO, linker-provided reserved symbols, and similar embedded
+# APIs are intentional. CallAndMessage is excluded because the analyzer loses
+# AsyncBlockWait::Start()'s semaphore assignment across DMA callbacks.
+Checks: >
+  -*,
+  clang-analyzer-*,
+  bugprone-*,
+  performance-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-reserved-identifier,
+  -clang-analyzer-core.CallAndMessage,
+  -clang-analyzer-core.FixedAddressDereference,
+  -performance-no-int-to-ptr
+HeaderFilterRegex: '(^|[/\\])(driver|User)[/\\]'
+ExcludeHeaderFilterRegex: '[/\\]libxr[/\\]'
+SystemHeaders: false
+ExtraArgsBefore:
+  - '--target=riscv64-unknown-elf'
+ExtraArgs:
+  - '-mcpu=generic-rv64'
+  - '-isystem'
+  - 'D:/Development/xpack-riscv-none-elf-gcc-15.2.0-1/riscv-none-elf/include/c++/15.2.0'
+  - '-isystem'
+  - 'D:/Development/xpack-riscv-none-elf-gcc-15.2.0-1/riscv-none-elf/include/c++/15.2.0/riscv-none-elf/rv64imafdc_zicsr_zaamo_zalrsc/lp64d'
+  - '-isystem'
+  - 'D:/Development/xpack-riscv-none-elf-gcc-15.2.0-1/lib/gcc/riscv-none-elf/15.2.0/include'
+  - '-isystem'
+  - 'D:/Development/xpack-riscv-none-elf-gcc-15.2.0-1/lib/gcc/riscv-none-elf/15.2.0/include-fixed'
+  - '-isystem'
+  - 'D:/Development/xpack-riscv-none-elf-gcc-15.2.0-1/riscv-none-elf/include'

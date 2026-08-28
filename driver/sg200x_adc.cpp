@@ -51,7 +51,11 @@ SG200XADC::SG200XADC(std::initializer_list<uint8_t> channels, Config config)
     return;
   }
 
-  EnableClocksAndReset();
+  if (EnableClocksAndReset() != ErrorCode::OK)
+  {
+    channel_count_ = 0u;
+    return;
+  }
   ConfigureDomain(ACTIVE_BASE);
   ConfigureDomain(RTC_BASE);
   valid_ = true;
@@ -142,13 +146,19 @@ uint8_t SG200XADC::DomainChannel(uint8_t channel) noexcept
   return channel <= 3u ? channel : static_cast<uint8_t>(channel - 3u);
 }
 
-void SG200XADC::EnableClocksAndReset() noexcept
+ErrorCode SG200XADC::EnableClocksAndReset() noexcept
 {
   // The active-domain gate/reset belongs to the shared TOP resource model.
   // RTC SARADC has an additional domain-local clock/reset that remains here.
-  (void)SG200XRCC::Instance().PreparePeripheral(SG200XRCC::PeripheralId::SarAdc);
+  const ErrorCode result =
+      SG200XRCC::Instance().PreparePeripheral(SG200XRCC::PeripheralId::SarAdc);
+  if (result != ErrorCode::OK)
+  {
+    return result;
+  }
   Register32(RTC_CTRL_BASE, RTC_REG_CLOCK_MUX) &= ~RTC_SARADC_CLOCK_MUX;
   Register32(RTC_CTRL_BASE, RTC_REG_RESET) |= RTC_SARADC_RESETN;
+  return ErrorCode::OK;
 }
 
 void SG200XADC::ConfigureDomain(uintptr_t base) const noexcept

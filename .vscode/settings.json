@@ -1,8 +1,9 @@
 {
   "cmake.useCMakePresets": "always",
   "cmake.configureOnOpen": false,
+  "cmake.configurePreset": "c906",
+  "cmake.buildPreset": "firmware",
   "clangd.arguments": [
-    "--compile-commands-dir=${workspaceFolder}/build/clangd",
-    "--query-driver=C:/MounRiver/MounRiver_Studio2/resources/app/resources/win32/components/WCH/Toolchain/RISC-V Embedded GCC/bin/riscv-none-embed-gcc.exe,C:/MounRiver/MounRiver_Studio2/resources/app/resources/win32/components/WCH/Toolchain/RISC-V Embedded GCC/bin/riscv-none-embed-g++.exe"
+    "--compile-commands-dir=${workspaceFolder}/build/clangd"
   ]
 }

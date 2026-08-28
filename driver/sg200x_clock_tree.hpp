@@ -96,8 +96,9 @@ enum class PeripheralId : uint8_t
 // Reset IDs use the linear active-low IDs from cv181x-resets.h. They are
 // deliberately separate from ClockId: reset lines are resource controls, not
 // clock-tree edges.
-enum class ResetId : uint16_t
+enum class ResetId : uint8_t
 {
+  None = 0u,
   Sdma = 18u,
   I2c0 = 27u,
   I2c1 = 28u,
@@ -175,7 +176,7 @@ struct PeripheralResources
   PeripheralId peripheral{};
   std::array<ClockId, 2u> clocks{ClockId::None, ClockId::None};
   uint8_t clock_count = 0u;
-  ResetId reset{};
+  ResetId reset = ResetId::None;
 };
 
 [[nodiscard]] constexpr RegisterField Field(uint16_t offset, uint8_t shift,
@@ -560,13 +561,13 @@ static_assert(C906L_I2C_PLAN.divider == 1u &&
   {
     return false;
   }
-  for (uint8_t index = 0u; index < parents.ids.size(); ++index)
+  for (std::size_t index = 0u; index < parents.ids.size(); ++index)
   {
     if ((index < parents.count) != (parents.ids[index] != ClockId::None))
     {
       return false;
     }
-    for (uint8_t previous = 0u; previous < index; ++previous)
+    for (std::size_t previous = 0u; previous < index; ++previous)
     {
       if (parents.ids[index] != ClockId::None &&
           parents.ids[index] == parents.ids[previous])
@@ -747,11 +748,13 @@ static_assert(C906L_I2C_PLAN.divider == 1u &&
     if (static_cast<std::size_t>(resource.peripheral) != index ||
         resource.clock_count == 0u ||
         resource.clock_count > resource.clocks.size() ||
+        resource.reset == ResetId::None ||
         static_cast<uint16_t>(resource.reset) >= RESET_LINE_COUNT)
     {
       return false;
     }
-    for (uint8_t clock_index = 0u; clock_index < resource.clocks.size(); ++clock_index)
+    for (std::size_t clock_index = 0u; clock_index < resource.clocks.size();
+         ++clock_index)
     {
       if ((clock_index < resource.clock_count) !=
               (resource.clocks[clock_index] != ClockId::None) ||
@@ -760,7 +763,7 @@ static_assert(C906L_I2C_PLAN.divider == 1u &&
       {
         return false;
       }
-      for (uint8_t previous = 0u; previous < clock_index; ++previous)
+      for (std::size_t previous = 0u; previous < clock_index; ++previous)
       {
         if (resource.clocks[clock_index] != ClockId::None &&
             resource.clocks[clock_index] == resource.clocks[previous])

@@ -114,7 +114,7 @@ ErrorCode SG200XWatchdog::SetConfig(const Configuration& config)
 }
 void SG200XWatchdog::ConfigureResetRoute() const noexcept
 {
-  Register32(TOP_BASE, TOP_SYS_CTRL_OFFSET) |= 1u << 2u;
+  Register32(TOP_BASE, TOP_SYS_CTRL_OFFSET) |= 1u << 8u;
   auto& top = Register32(TOP_BASE, REG_TOP_WDT_CTRL);
   const uint32_t system_bit = reset_route_bit_;
   const uint32_t cpu_bit = reset_route_bit_ << 4u;

@@ -15,6 +15,7 @@ class SG200XDMAC final
  public:
   enum class Request : uint8_t
   {
+    NONE = 0u,
     SPI0_RX = 16u,
     SPI0_TX,
     SPI1_RX,
@@ -58,10 +59,16 @@ class SG200XDMAC final
   struct Transfer
   {
     uintptr_t memory = 0u;
+    // Backing allocation size in bytes. Required when DMA writes to memory so
+    // cache maintenance can prove that every affected cache line is owned by
+    // this transfer.
+    size_t memory_capacity = 0u;
     // For MEMORY_TO_MEMORY this is the destination memory address.
     uintptr_t peripheral = 0u;
+    // Backing allocation size for the MEMORY_TO_MEMORY destination.
+    size_t peripheral_capacity = 0u;
     size_t count = 0u;
-    Request request = Request::I2C0_TX;
+    Request request = Request::NONE;
     Direction direction = Direction::MEMORY_TO_PERIPHERAL;
     Width width = Width::BYTE;
     Mode mode = Mode::NORMAL;
@@ -87,6 +94,7 @@ class SG200XDMAC final
   static int InterruptHandler(int irq, void* argument);
   static void CheckInterrupt(bool in_isr);
   static void CleanForDevice(uintptr_t address, size_t size) noexcept;
+  static void PrepareForDeviceWrite(uintptr_t address, size_t size) noexcept;
   static void InvalidateForCpu(uintptr_t address, size_t size) noexcept;
 };
 

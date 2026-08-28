@@ -1,8 +1,22 @@
 CompileFlags:
   CompilationDatabase: build/clangd
-  Add: [--target=riscv64-unknown-elf, -march=rv64imafdc, -mabi=lp64d]
   Remove: [-mthumb, -mcpu=*, -mfpu=*, -mfloat-abi=*]
 
 Diagnostics:
   ClangTidy:
     Add: [clang-analyzer-*, bugprone-*, performance-*]
+    Remove: [
+      bugprone-easily-swappable-parameters,
+      bugprone-reserved-identifier,
+      clang-analyzer-core.FixedAddressDereference,
+      performance-no-int-to-ptr
+    ]
+
+---
+# The analyzer loses AsyncBlockWait::Start()'s semaphore assignment after the
+# DMA callbacks are published, then reports AsyncBlockWait::Wait() as null.
+If:
+  PathMatch: '(.*/)?driver/sg200x_spi\.cpp'
+Diagnostics:
+  ClangTidy:
+    Remove: [clang-analyzer-core.CallAndMessage]

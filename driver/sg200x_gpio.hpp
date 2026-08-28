@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 
 #include "gpio.hpp"
@@ -17,6 +18,11 @@ namespace LibXR
 class SG200XGPIO final : public GPIO
 {
  public:
+  static_assert(std::atomic<SG200XGPIO*>::is_always_lock_free,
+                "SG200XGPIO requires lock-free pointer atomics");
+  static_assert(std::atomic<bool>::is_always_lock_free,
+                "SG200XGPIO requires lock-free boolean atomics");
+
   enum class Bank : uint8_t
   {
     A,
@@ -31,6 +37,12 @@ class SG200XGPIO final : public GPIO
   static constexpr uint32_t GPIO3_IRQ = 44u;
   static constexpr uint32_t INVALID_PINMUX = UINT32_MAX;
   explicit SG200XGPIO(Bank bank, uint8_t pin);
+  ~SG200XGPIO() override;
+
+  SG200XGPIO(const SG200XGPIO&) = delete;
+  SG200XGPIO& operator=(const SG200XGPIO&) = delete;
+  SG200XGPIO(SG200XGPIO&&) = delete;
+  SG200XGPIO& operator=(SG200XGPIO&&) = delete;
 
   bool Read() override;
   void Write(bool value) override;
@@ -42,6 +54,15 @@ class SG200XGPIO final : public GPIO
   static void CheckInterrupt(uintptr_t gpio_base);
 
  private:
+  enum class IrqRegistrationState : uint8_t
+  {
+    UNREGISTERED,
+    INITIALIZING,
+    READY,
+  };
+  static_assert(std::atomic<IrqRegistrationState>::is_always_lock_free,
+                "SG200XGPIO requires lock-free IRQ state atomics");
+
   static constexpr uint32_t REG_DR = 0x00u;
   static constexpr uint32_t REG_DDR = 0x04u;
   static constexpr uint32_t REG_INTEN = 0x30u;
@@ -66,10 +87,10 @@ class SG200XGPIO final : public GPIO
   uint32_t pinmux_offset_ = INVALID_PINMUX;
   uint32_t irq_ = 0u;
   Direction direction_ = Direction::INPUT;
-  bool interrupt_enabled_ = false;
+  std::atomic<bool> interrupt_enabled_{false};
 
-  static SG200XGPIO* instances_[CONTROLLER_COUNT][PIN_COUNT];
-  static bool irq_registered_[CONTROLLER_COUNT];
+  static std::atomic<SG200XGPIO*> instances_[CONTROLLER_COUNT][PIN_COUNT];
+  static std::atomic<IrqRegistrationState> irq_registration_[CONTROLLER_COUNT];
 };
 
 }  // namespace LibXR

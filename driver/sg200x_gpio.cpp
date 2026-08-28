@@ -17,7 +17,10 @@ constexpr uintptr_t GPIO0_BASE = 0x03020000u;
 constexpr uintptr_t GPIO1_BASE = 0x03021000u;
 constexpr uintptr_t GPIO2_BASE = 0x03022000u;
 constexpr uintptr_t GPIO3_BASE = 0x03023000u;
+constexpr uintptr_t GPIO_CONTROLLER_STRIDE = 0x1000u;
 constexpr uintptr_t PINMUX_BASE = 0x03001000u;
+
+void IoFence() noexcept { asm volatile("fence iorw, iorw" ::: "memory"); }
 
 void ConfigurePinmux(uint32_t offset)
 {
@@ -32,8 +35,10 @@ void ConfigurePinmux(uint32_t offset)
 
 }  // namespace
 
-SG200XGPIO* SG200XGPIO::instances_[CONTROLLER_COUNT][PIN_COUNT] = {};
-bool SG200XGPIO::irq_registered_[CONTROLLER_COUNT] = {};
+std::atomic<SG200XGPIO*>
+    SG200XGPIO::instances_[CONTROLLER_COUNT][PIN_COUNT]{};
+std::atomic<SG200XGPIO::IrqRegistrationState>
+    SG200XGPIO::irq_registration_[CONTROLLER_COUNT]{};
 
 uint8_t SG200XGPIO::ControllerIndex(uintptr_t gpio_base) noexcept
 {
@@ -113,7 +118,34 @@ SG200XGPIO::SG200XGPIO(Bank bank, uint8_t pin)
   pin_mask_ = static_cast<uint32_t>(1u) << pin_;
   pinmux_offset_ = PinmuxOffset(bank, pin_);
   irq_ = DefaultIrq(controller);
-  instances_[controller][pin_] = this;
+  SG200XGPIO* expected = nullptr;
+  if (!instances_[controller][pin_].compare_exchange_strong(
+          expected, this, std::memory_order_acq_rel, std::memory_order_acquire))
+  {
+    gpio_base_ = 0u;
+    pin_mask_ = 0u;
+    return;
+  }
+}
+
+SG200XGPIO::~SG200XGPIO()
+{
+  const uint8_t controller = ControllerIndex(gpio_base_);
+  if (controller >= CONTROLLER_COUNT || pin_ >= PIN_COUNT)
+  {
+    return;
+  }
+
+  interrupt_enabled_.store(false, std::memory_order_release);
+  IoFence();
+  Register32(gpio_base_, REG_INTEN) &= ~pin_mask_;
+  Register32(gpio_base_, REG_INTMASK) |= pin_mask_;
+  Register32(gpio_base_, REG_EOI) = pin_mask_;
+  IoFence();
+  SG200XGPIO* expected = this;
+  (void)instances_[controller][pin_].compare_exchange_strong(
+      expected, nullptr, std::memory_order_acq_rel, std::memory_order_acquire);
+  gpio_base_ = 0u;
 }
 
 bool SG200XGPIO::Read()
@@ -130,21 +162,27 @@ void SG200XGPIO::Write(bool value)
 
   ConfigurePinmux(pinmux_offset_);
 
+  auto& data = Register32(gpio_base_, REG_DR);
   if (direction_ == Direction::OUTPUT_OPEN_DRAIN && value)
   {
     // An open-drain high level is released by switching the pin to input.
     Register32(gpio_base_, REG_DDR) &= ~pin_mask_;
+    data |= pin_mask_;
+    return;
   }
-  else if (direction_ == Direction::OUTPUT_OPEN_DRAIN ||
-           direction_ == Direction::OUTPUT_PUSH_PULL)
+  if (direction_ == Direction::OUTPUT_OPEN_DRAIN)
+  {
+    // Never enable the push-pull output while its latch still contains high.
+    data &= ~pin_mask_;
+    IoFence();
+    Register32(gpio_base_, REG_DDR) |= pin_mask_;
+    return;
+  }
+  if (direction_ == Direction::OUTPUT_PUSH_PULL)
   {
     Register32(gpio_base_, REG_DDR) |= pin_mask_;
   }
 
-  // Configure output-enable before changing the data latch.  This is the
-  // sequence used by Sophgo's C906 GPIO helper and avoids a transient/ignored
-  // write on the DesignWare GPIO block.
-  auto& data = Register32(gpio_base_, REG_DR);
   data = (data & ~pin_mask_) | (value ? pin_mask_ : 0u);
 }
 
@@ -174,7 +212,8 @@ ErrorCode SG200XGPIO::SetConfig(Configuration config)
   ConfigurePinmux(pinmux_offset_);
 
   direction_ = config.direction;
-  interrupt_enabled_ = false;
+  interrupt_enabled_.store(false, std::memory_order_release);
+  IoFence();
   Register32(gpio_base_, REG_INTEN) &= ~pin_mask_;
   Register32(gpio_base_, REG_INTMASK) |= pin_mask_;
   Register32(gpio_base_, REG_EOI) = pin_mask_;
@@ -190,9 +229,10 @@ ErrorCode SG200XGPIO::SetConfig(Configuration config)
       Register32(gpio_base_, REG_INTTYPE_LEVEL) &= ~pin_mask_;
       break;
     case Direction::OUTPUT_OPEN_DRAIN:
+      Register32(gpio_base_, REG_DR) &= ~pin_mask_;
+      IoFence();
       Register32(gpio_base_, REG_DDR) |= pin_mask_;
       Register32(gpio_base_, REG_INTTYPE_LEVEL) &= ~pin_mask_;
-      Register32(gpio_base_, REG_DR) &= ~pin_mask_;
       break;
     case Direction::RISING_INTERRUPT:
       Register32(gpio_base_, REG_DDR) &= ~pin_mask_;
@@ -228,21 +268,39 @@ ErrorCode SG200XGPIO::EnableInterrupt()
   {
     return ErrorCode::ARG_ERR;
   }
-  if (!irq_registered_[controller])
+  IrqRegistrationState registration =
+      irq_registration_[controller].load(std::memory_order_acquire);
+  if (registration == IrqRegistrationState::UNREGISTERED)
   {
+    IrqRegistrationState expected = IrqRegistrationState::UNREGISTERED;
+    if (!irq_registration_[controller].compare_exchange_strong(
+            expected, IrqRegistrationState::INITIALIZING,
+            std::memory_order_acq_rel, std::memory_order_acquire))
+    {
+      return ErrorCode::BUSY;
+    }
     if (request_irq == nullptr ||
         request_irq(irq_, &SG200XGPIO::InterruptHandler, 0u, "sg200x-gpio",
-                    reinterpret_cast<void*>(gpio_base_)) != 0)
+                    nullptr) != 0)
     {
+      irq_registration_[controller].store(IrqRegistrationState::UNREGISTERED,
+                                           std::memory_order_release);
       return ErrorCode::NOT_SUPPORT;
     }
-    irq_registered_[controller] = true;
+    irq_registration_[controller].store(IrqRegistrationState::READY,
+                                         std::memory_order_release);
+  }
+  else if (registration != IrqRegistrationState::READY)
+  {
+    return ErrorCode::BUSY;
   }
 
+  interrupt_enabled_.store(true, std::memory_order_release);
+  IoFence();
   Register32(gpio_base_, REG_EOI) = pin_mask_;
   Register32(gpio_base_, REG_INTMASK) &= ~pin_mask_;
   Register32(gpio_base_, REG_INTEN) |= pin_mask_;
-  interrupt_enabled_ = true;
+  IoFence();
   return ErrorCode::OK;
 }
 
@@ -253,10 +311,12 @@ ErrorCode SG200XGPIO::DisableInterrupt()
     return ErrorCode::ARG_ERR;
   }
 
+  interrupt_enabled_.store(false, std::memory_order_release);
+  IoFence();
   Register32(gpio_base_, REG_INTEN) &= ~pin_mask_;
   Register32(gpio_base_, REG_INTMASK) |= pin_mask_;
   Register32(gpio_base_, REG_EOI) = pin_mask_;
-  interrupt_enabled_ = false;
+  IoFence();
   return ErrorCode::OK;
 }
 
@@ -276,18 +336,27 @@ void SG200XGPIO::CheckInterrupt(uintptr_t gpio_base)
 
   for (uint8_t pin = 0u; pin < PIN_COUNT; ++pin)
   {
+    SG200XGPIO* const instance =
+        instances_[controller][pin].load(std::memory_order_acquire);
     if ((pending & (static_cast<uint32_t>(1u) << pin)) != 0u &&
-        instances_[controller][pin] != nullptr &&
-        instances_[controller][pin]->interrupt_enabled_)
+        instance != nullptr &&
+        instance->interrupt_enabled_.load(std::memory_order_acquire))
     {
-      instances_[controller][pin]->callback_.Run(true);
+      instance->callback_.Run(true);
     }
   }
 }
 
-int SG200XGPIO::InterruptHandler(int, void* argument)
+int SG200XGPIO::InterruptHandler(int irq, void*)
 {
-  CheckInterrupt(reinterpret_cast<uintptr_t>(argument));
+  if (irq < static_cast<int>(GPIO0_IRQ) ||
+      irq >= static_cast<int>(GPIO0_IRQ + CONTROLLER_COUNT))
+  {
+    return 0;
+  }
+  const auto controller = static_cast<uint8_t>(irq - static_cast<int>(GPIO0_IRQ));
+  CheckInterrupt(GPIO0_BASE + static_cast<uintptr_t>(controller) *
+                                   GPIO_CONTROLLER_STRIDE);
   return 0;
 }
 

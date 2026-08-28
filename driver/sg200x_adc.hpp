@@ -113,7 +113,7 @@ class SG200XADC final
   static constexpr uint32_t CYCLE_COMPARE_DEFAULT = 0x0Bu << 16u;
   static uintptr_t DomainBase(uint8_t channel) noexcept;
   static uint8_t DomainChannel(uint8_t channel) noexcept;
-  static void EnableClocksAndReset() noexcept;
+  static ErrorCode EnableClocksAndReset() noexcept;
   void ConfigureDomain(uintptr_t base) const noexcept;
   ErrorCode WaitIdle(uintptr_t base) const noexcept;
 

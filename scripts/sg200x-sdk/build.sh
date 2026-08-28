@@ -29,9 +29,20 @@ stage_sdk_worktree() {
   # Build only from tracked blobs at the pinned commit. This intentionally
   # ignores files physically present in the source SDK worktree.
   rm -rf "$sdk_dir"
-  mkdir -p "$sdk_dir/freertos/cvitek" "$sdk_dir/build/scripts"
+  mkdir -p "$sdk_dir/freertos/cvitek" "$sdk_dir/freertos/Source" \
+    "$sdk_dir/freertos/Tracealyzer" "$sdk_dir/build/scripts"
+  # MSYS tar cannot materialize the SDK's `driver/base/include/linux -> uapi`
+  # symlink when the target directory already exists. Exclude that one link
+  # and provide an equivalent directory below; all other SDK paths are copied
+  # from the pinned git tree unchanged.
   git -C "$sdk_source_dir" archive --format=tar "HEAD:freertos/cvitek" |
-    tar -xf - -C "$sdk_dir/freertos/cvitek"
+    tar --exclude='driver/base/include/linux' -xf - -C "$sdk_dir/freertos/cvitek"
+  cp -R "$sdk_dir/freertos/cvitek/driver/base/include/uapi" \
+    "$sdk_dir/freertos/cvitek/driver/base/include/linux"
+  git -C "$sdk_source_dir" archive --format=tar "HEAD:freertos/Source" |
+    tar -xf - -C "$sdk_dir/freertos/Source"
+  git -C "$sdk_source_dir" archive --format=tar "HEAD:freertos/Tracealyzer" |
+    tar -xf - -C "$sdk_dir/freertos/Tracealyzer"
   git -C "$sdk_source_dir" archive --format=tar "HEAD:build/scripts" |
     tar -xf - -C "$sdk_dir/build/scripts"
   git -C "$sdk_source_dir" show "HEAD:build/envsetup_milkv.sh" >"$sdk_dir/build/envsetup_milkv.sh"
@@ -56,8 +67,11 @@ export_compile_commands() {
   local database=$sdk_dir/freertos/cvitek/build/task/compile_commands.json
   [[ -s $database ]] || return 0
   mkdir -p "$clangd_dir"
-  # Native CMake emits native paths, so clangd consumes this database directly.
-  cp "$database" "$clangd_dir/compile_commands.json"
+  # Native CMake emits GCC commands. Generate a clangd-only database with a
+  # Clang driver and target while deriving libstdc++ paths from that command's
+  # compiler; the generated file is ignored and never becomes project config.
+  python3 "$port_root/export_clangd_database.py" "$database" \
+    "$clangd_dir/compile_commands.json"
 }
 
 stage_sdk_worktree
@@ -77,6 +91,19 @@ if [[ ! -f $toolchain_stamp ]] || [[ $(<"$toolchain_stamp") != "$toolchain_id" ]
   rm -rf "$sdk_dir/freertos/cvitek/build"
   mkdir -p "${toolchain_stamp%/*}"
   printf '%s\n' "$toolchain_id" >"$toolchain_stamp"
+fi
+
+# CMake on native Windows canonicalizes an absolute Generic-toolchain path by
+# dropping `.exe` and then rejects the compiler as non-existent. Put the xPack
+# directory on PATH and pass only the executable prefix so CMake resolves the
+# platform suffix itself. Keep the original absolute value in the stamp above.
+if [[ ${SG200X_CROSS_COMPILE:-} == */* ]]; then
+  toolchain_dir="${SG200X_CROSS_COMPILE%/*}"
+  if command -v cygpath >/dev/null 2>&1; then
+    toolchain_dir=$(cygpath -u "$toolchain_dir")
+  fi
+  export PATH="$toolchain_dir:$PATH"
+  export SG200X_CROSS_COMPILE="${SG200X_CROSS_COMPILE##*/}"
 fi
 
 mkdir -p "$output_dir"

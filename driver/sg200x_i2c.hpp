@@ -20,11 +20,17 @@ namespace LibXR
 class SG200XI2C final : public I2C
 {
  public:
+  static_assert(std::atomic<SG200XI2C*>::is_always_lock_free,
+                "SG200XI2C requires lock-free pointer atomics");
+  static_assert(std::atomic<bool>::is_always_lock_free,
+                "SG200XI2C requires lock-free boolean atomics");
+
   using Controller = SG200XRCC::I2cController;
   static constexpr uintptr_t I2C0_BASE = 0x04000000u;
 
   SG200XI2C(Controller controller, RawData tx_command_buffer, RawData rx_buffer,
             Configuration config = {100000u});
+  ~SG200XI2C();
 
   ErrorCode Read(uint16_t slave_addr, RawData read_data, ReadOperation& op,
                  bool in_isr = false) override;
@@ -46,9 +52,10 @@ class SG200XI2C final : public I2C
   }
 
  private:
+  static constexpr uint8_t CONTROLLER_COUNT = 5u;
   static constexpr uintptr_t STRIDE = 0x10000u;
-  // C906L's FreeRTOS interrupt map assigns I2C0..I2C4 to 32..36. The Linux
-  // PLIC source numbers 49..53 belong to a different interrupt namespace.
+  // C906L's SDK interrupt map assigns I2C0..I2C4 to 32..36. The Linux RISC-V
+  // device tree's 49..53 values belong to the main-core PLIC namespace.
   static constexpr uint32_t IRQ0 = 32u;
   static constexpr uint32_t REG_CON = 0x00u, REG_TAR = 0x04u, REG_DATA_CMD = 0x10u;
   static constexpr uint32_t REG_SS_H = 0x14u, REG_SS_L = 0x18u, REG_FS_H = 0x1Cu,
@@ -76,6 +83,7 @@ class SG200XI2C final : public I2C
   static int Interrupt(int irq, void* context);
 
   uintptr_t base_ = 0u;
+  uint8_t controller_index_ = 0xFFu;
   uint32_t input_clock_hz_ = 0u;
   RawData tx_stage_{};
   RawData rx_stage_{};
@@ -87,5 +95,9 @@ class SG200XI2C final : public I2C
   RawData read_target_{};
   Operation<ErrorCode> operation_{};
   AsyncBlockWait block_wait_{};
+
+  static std::atomic<bool> controller_claimed_[CONTROLLER_COUNT];
+  static std::atomic<SG200XI2C*> instances_[CONTROLLER_COUNT];
+  static bool irq_registered_[CONTROLLER_COUNT];
 };
 }  // namespace LibXR

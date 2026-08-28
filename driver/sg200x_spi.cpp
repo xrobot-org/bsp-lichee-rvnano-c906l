@@ -13,15 +13,21 @@ SG200XSPI::SG200XSPI(Controller controller, uint8_t chip_select, RawData rx_buff
   if (index >= CONTROLLER_COUNT || chip_select >= 32u || rx_buffer.addr_ == nullptr ||
       tx_buffer.addr_ == nullptr || rx_buffer.size_ == 0u || tx_buffer.size_ == 0u ||
       (reinterpret_cast<uintptr_t>(rx_buffer.addr_) % HW_CACHE_LINE_SIZE) != 0u ||
-      (reinterpret_cast<uintptr_t>(tx_buffer.addr_) % HW_CACHE_LINE_SIZE) != 0u)
+      (reinterpret_cast<uintptr_t>(tx_buffer.addr_) % HW_CACHE_LINE_SIZE) != 0u ||
+      (rx_buffer.size_ % HW_CACHE_LINE_SIZE) != 0u ||
+      (tx_buffer.size_ % HW_CACHE_LINE_SIZE) != 0u)
   {
     return;
   }
   const auto peripheral = static_cast<SG200XRCC::PeripheralId>(
       static_cast<uint8_t>(SG200XRCC::PeripheralId::Spi0) + index);
   SG200XRCC& rcc = SG200XRCC::Instance();
-  if (rcc.PreparePeripheral(peripheral) != ErrorCode::OK ||
-      (input_clock_hz_ = rcc.ClockRate(SG200XRCC::ClockId::Spi)) == 0u)
+  if (rcc.PreparePeripheral(peripheral) != ErrorCode::OK)
+  {
+    return;
+  }
+  input_clock_hz_ = rcc.ClockRate(SG200XRCC::ClockId::Spi);
+  if (input_clock_hz_ == 0u)
   {
     return;
   }
@@ -157,6 +163,15 @@ ErrorCode SG200XSPI::StartDmaTransfer(RawData read_data, ConstRawData write_data
   {
     return ErrorCode::ARG_ERR;
   }
+  if ((op.type == OperationRW::OperationType::CALLBACK &&
+       op.data.callback == nullptr) ||
+      (op.type == OperationRW::OperationType::BLOCK &&
+       op.data.sem_info.sem == nullptr) ||
+      (op.type == OperationRW::OperationType::POLLING &&
+       op.data.status == nullptr))
+  {
+    return ErrorCode::ARG_ERR;
+  }
   if (!TryLock())
   {
     return ErrorCode::BUSY;
@@ -188,12 +203,21 @@ ErrorCode SG200XSPI::StartDmaTransfer(RawData read_data, ConstRawData write_data
   const size_t read_offset = has_prefix ? 1u : 0u;
   const size_t frames = payload_frames + read_offset;
 
-  RawData dma_rx = GetRxBuffer();
-  RawData dma_tx = GetTxBuffer();
+  const RawData internal_rx = GetRxBuffer();
+  const RawData internal_tx = GetTxBuffer();
+  RawData dma_rx = internal_rx;
+  RawData dma_tx = internal_tx;
+  const size_t dma_rx_capacity = internal_rx.size_;
+  const size_t dma_tx_capacity = internal_tx.size_;
   if (buffer_mode == DmaBufferMode::INTERNAL)
   {
     dma_rx = read_data;
     dma_tx = {const_cast<void*>(write_data.addr_), write_data.size_};
+    if (dma_rx.addr_ != internal_rx.addr_ || dma_tx.addr_ != internal_tx.addr_)
+    {
+      Unlock();
+      return ErrorCode::ARG_ERR;
+    }
   }
   if (dma_rx.addr_ == nullptr || dma_tx.addr_ == nullptr ||
       (reinterpret_cast<uintptr_t>(dma_rx.addr_) % HW_CACHE_LINE_SIZE) != 0u ||
@@ -270,6 +294,7 @@ ErrorCode SG200XSPI::StartDmaTransfer(RawData read_data, ConstRawData write_data
   Register32(base_, REG_SER) = chip_select_mask_;
   const SG200XDMAC::Transfer rx_transfer{
       .memory = rx_start,
+      .memory_capacity = dma_rx_capacity,
       .peripheral = base_ + REG_DR,
       .count = frames,
       .request = static_cast<SG200XDMAC::Request>(
@@ -282,6 +307,7 @@ ErrorCode SG200XSPI::StartDmaTransfer(RawData read_data, ConstRawData write_data
       .context = this};
   const SG200XDMAC::Transfer tx_transfer{
       .memory = tx_start,
+      .memory_capacity = dma_tx_capacity,
       .peripheral = base_ + REG_DR,
       .count = frames,
       .request = static_cast<SG200XDMAC::Request>(
@@ -411,20 +437,21 @@ void SG200XSPI::FinishDma(ErrorCode result, bool in_isr)
   {
     SwitchBuffer();
   }
-  if (active_op_.type == OperationRW::OperationType::BLOCK)
-  {
-    (void)block_wait_.TryPost(in_isr, result);
-  }
-  else
-  {
-    active_op_.UpdateStatus(in_isr, result);
-  }
+  OperationRW operation = active_op_;
   active_op_ = {};
   active_read_ = {};
   active_read_offset_ = 0u;
   active_read_needs_copy_ = false;
   Unlock();
   finishing_.store(false, std::memory_order_release);
+  if (operation.type == OperationRW::OperationType::BLOCK)
+  {
+    (void)block_wait_.TryPost(in_isr, result);
+  }
+  else
+  {
+    operation.UpdateStatus(in_isr, result);
+  }
 }
 
 void SG200XSPI::CancelDmaTransfer()
@@ -586,11 +613,7 @@ ErrorCode SG200XSPI::MemWrite(uint16_t reg, ConstRawData write_data, OperationRW
   {
     return ErrorCode::SIZE_ERR;
   }
-  if (write_data.size_ == 0u)
-  {
-    return ReadAndWrite({}, {}, op, in_isr);
-  }
-  if (write_data.addr_ == nullptr)
+  if (write_data.size_ != 0u && write_data.addr_ == nullptr)
   {
     return ErrorCode::ARG_ERR;
   }
@@ -609,11 +632,7 @@ ErrorCode SG200XSPI::MemRead(uint16_t reg, RawData read_data, OperationRW& op,
   {
     return ErrorCode::SIZE_ERR;
   }
-  if (read_data.size_ == 0u)
-  {
-    return ReadAndWrite({}, {}, op, in_isr);
-  }
-  if (read_data.addr_ == nullptr)
+  if (read_data.size_ != 0u && read_data.addr_ == nullptr)
   {
     return ErrorCode::ARG_ERR;
   }

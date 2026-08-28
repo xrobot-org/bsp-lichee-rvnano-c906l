@@ -69,6 +69,11 @@ and derives AXI4 300 MHz, AXI6/I2C 100 MHz, 1 MHz, and SPI 187.5 MHz from it.
 only the branches required by a prepared peripheral. It never retunes a PLL or
 the clock of the running C906L core. A rate that traverses an as-yet undecoded
 fractional G2 PLL still returns zero rather than a plausible-looking guess.
+Clock/reset updates use a lock-free, fail-fast writer transaction and return
+`BUSY` on overlap; they are startup/thread control-plane calls, not ISR APIs.
+Live rate decoding never waits and uses a sequence check to reject an
+intermediate hardware state with a zero result. No RCC operation disables
+machine interrupts.
 SPI is only one consumer of this provider; DMA and SARADC use the same resource
 mapping already.
 Each submitted transfer claims a C906L-owned DMA channel and programs its
@@ -132,16 +137,25 @@ the gates/reset and reads the live `CLK_I2C` rate from `SG200XRCC`. Standard-
 and fast-mode timing counts are derived from that rate using the DesignWare
 compensation formula and validated against the register widths. It supports
 7-bit and 10-bit targets and repeated-start register reads. The constructor
-requires caller-owned, cache-line-aligned DMA command and receive
-staging buffers: `IC_DATA_CMD` includes read, restart, and stop command bits,
+requires caller-owned, cache-line-aligned DMA command and receive staging
+buffers whose capacities are whole cache-line multiples: `IC_DATA_CMD`
+includes read, restart, and stop command bits,
 so raw user bytes cannot be written directly by DMA. STOP_DET or TX_ABRT IRQ
 is combined with DMA completion before the LibXR operation completes. Invalid
 arguments, zero-length operations, active-operation `BUSY`, block timeouts,
 NACK cleanup/recovery, and BLOCK/CALLBACK/POLLING completion follow the same
 LibXR operation contract used by the STM32 drivers. The submitted operation is
 copied into the driver before hardware can complete, so asynchronous calls do
-not retain a pointer to the caller's operation wrapper. I2C transfers always
-use Normal DMA. Circular DMA is not an I2C transaction mode in STM32I2C and
+not retain a pointer to the caller's operation wrapper. One live object may
+own each controller; the permanent SDK IRQ entry dispatches through a
+lifecycle-managed per-controller instance table rather than retaining an
+object address. The dispatch pointer is published and removed atomically, so
+normal transfers, IRQ registration, and teardown do not disable machine
+interrupts. A claim left in service by the previous remoteproc image is retired
+after the initialized instance has been published, so an immediately arriving
+IRQ can use the normal lock-free dispatch path. I2C transfers always use Normal
+DMA. Circular DMA is not an
+I2C transaction mode in STM32I2C and
 cannot autonomously repeat address, START/STOP, NACK, or arbitration handling;
 continuous sensor acquisition should schedule repeated Normal transactions.
 
@@ -153,15 +167,16 @@ hard-coded 187.5 MHz assumption. BAUDR only
 accepts an even divisor between 2 and 65534, so the driver reports
 `ssi_clk / 2` as the LibXR maximum and maps `DIV_1` to that fastest legal
 hardware setting. The driver owns one hardware slave-select bit per instance.
-Like `STM32SPI`, its constructor takes cache-line-aligned RX/TX DMA buffers.
+Like `STM32SPI`, its constructor takes cache-line-aligned RX/TX DMA buffers
+whose capacities are whole cache-line multiples.
 `ReadAndWrite`, `Read`, `Write`, `MemRead`, and `MemWrite` stage arbitrary
 caller buffers through that storage; `Transfer(size)` submits the active
 internal buffers directly and switches them on successful completion.
 `MemRead` and
 `MemWrite` follow LibXR's established 8-bit register convention (read: bit 7
 set; write: bit 7 clear); devices with a different wire protocol should use
-`ReadAndWrite` directly. Zero-length memory accesses complete without placing
-a command byte on the bus, matching the STM32SPI abstraction.
+`ReadAndWrite` directly. Zero-length memory accesses still place their command
+byte on the bus, matching the STM32SPI abstraction.
 
 SPI transfers use paired RX/TX DMA channels for every non-empty operation,
 including read-only and write-only calls, so the controller FIFO cannot stall.
@@ -191,8 +206,9 @@ undefines any non-QEMU `CLINT_MTIME` MMIO address, and the TRM marks the
 `0x30000000-0x7fffffff` range containing `0x74000000` as reserved. The board
 DTS's generic `riscv,clint0` node must therefore not be interpreted as proof
 that the standard SiFive `mtime` register exists at `0x7400BFF8`. The firmware
-device tree documents `timebase-frequency = 25000000`; the constructor accepts
-that CSR timebase frequency. The documented SG200x peripheral timer block at
+device tree documents `timebase-frequency = 25000000`; the timebase constructor
+accepts only that CSR frequency and does not expose an unusable CLINT address.
+The documented SG200x peripheral timer block at
 `0x030A0000` remains available for scheduler or application timer interrupts,
 but is not used as the timestamp source.
 
@@ -216,7 +232,11 @@ The driver supports input, push-pull output, software-emulated open-drain
 output, and rising or falling edge interrupts. The C906 SDK PLIC IRQ numbers
 are 41 through 44 for GPIO0 through GPIO3. `EnableInterrupt()` registers the
 controller interrupt with the SDK `request_irq()` API and dispatches registered
-LibXR callbacks for all pending pins in that controller.
+LibXR callbacks for all pending pins in that controller. A pin has unique
+object ownership; destruction masks its interrupt and removes it from the
+dispatch table. Instance publication, interrupt-enabled state, and first IRQ
+registration are lock-free atomics; a concurrent registration returns `BUSY`
+instead of waiting, and the ISR never takes a lock.
 
 The public SG200x C906 pinmux register description does not define pad-bias
 fields. To avoid silently applying an incorrect electrical configuration,

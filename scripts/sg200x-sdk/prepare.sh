@@ -81,7 +81,7 @@ fi
 
 if git -C "$sdk_dir" apply --recount --check "$runtime_patch_file" >/dev/null 2>&1; then
   git -C "$sdk_dir" apply --recount "$runtime_patch_file"
-elif grep -q 'sg200x_run_global_constructors' "$sdk_dir/freertos/cvitek/arch/riscv64/src/start.S" \
+elif grep -q '__libc_init_array' "$sdk_dir/freertos/cvitek/arch/riscv64/src/start.S" \
     && grep -q '__init_array_start' "$sdk_dir/freertos/cvitek/scripts/cv181x_lscript.ld"; then
   echo "C++ constructor runtime patch is already present in the SDK worktree."
 else

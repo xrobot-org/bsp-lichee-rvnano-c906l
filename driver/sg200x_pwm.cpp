@@ -98,7 +98,8 @@ uint32_t SG200XPWM::DutyToHighTicks(float duty, uint32_t period) noexcept
     return period - 1u;
   }
 
-  const auto ticks = static_cast<uint64_t>(duty * static_cast<float>(period) + 0.5f);
+  const auto ticks = static_cast<uint64_t>(
+      std::lround(static_cast<double>(duty) * static_cast<double>(period)));
   return ClampDutyTicks(ticks, period);
 }
 
@@ -168,6 +169,23 @@ ErrorCode SG200XPWM::SetDutyCycle(float value)
   return ErrorCode::OK;
 }
 
+ErrorCode SG200XPWM::SetPolarity(bool active_high)
+{
+  if (!IsValid())
+  {
+    return ErrorCode::ARG_ERR;
+  }
+  if (enabled_)
+  {
+    return ErrorCode::BUSY;
+  }
+
+  active_high_ = active_high;
+  auto& polarity = Register32(base_, REG_POLARITY);
+  polarity = active_high_ ? polarity & ~channel_mask_ : polarity | channel_mask_;
+  return ErrorCode::OK;
+}
+
 ErrorCode SG200XPWM::Enable()
 {
   if (!IsValid() || period_ticks_ < 2u)
@@ -176,7 +194,7 @@ ErrorCode SG200XPWM::Enable()
   }
 
   auto& polarity = Register32(base_, REG_POLARITY);
-  polarity &= ~channel_mask_;
+  polarity = active_high_ ? polarity & ~channel_mask_ : polarity | channel_mask_;
   auto& start = Register32(base_, REG_PWMSTART);
   start &= ~channel_mask_;
   auto& output_enable = Register32(base_, REG_PWM_OE);

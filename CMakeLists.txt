@@ -14,10 +14,19 @@ if(NOT SG200X_BASH)
 endif()
 set(SG200X_CROSS_COMPILE "$ENV{SG200X_CROSS_COMPILE}" CACHE STRING
     "RISC-V GNU compiler prefix, including the trailing hyphen")
+set(SG200X_TOOL_SUFFIX "$ENV{SG200X_TOOL_SUFFIX}" CACHE STRING
+    "Optional executable suffix for the cross compiler")
+if(WIN32 AND NOT SG200X_TOOL_SUFFIX)
+  set(SG200X_TOOL_SUFFIX ".exe" CACHE STRING
+      "Optional executable suffix for the cross compiler" FORCE)
+endif()
 set(SG200X_TARGET "$ENV{SG200X_TARGET}" CACHE STRING
     "SSH target in the form user@board-ip")
 set(SG200X_SSH_PORT "$ENV{SG200X_SSH_PORT}" CACHE STRING
     "Optional SSH port used by the deploy target")
+set(SG200X_BOARD_DEPLOY_CONFIG
+    "${CMAKE_SOURCE_DIR}/sdk/sg200x/licheervnano/deploy.conf" CACHE FILEPATH
+    "Board ownership configuration applied before C906L starts")
 
 if(NOT SG200X_SDK_DIR)
   message(FATAL_ERROR
@@ -47,6 +56,7 @@ set(_firmware_command
   ${CMAKE_COMMAND} -E env
     "SG200X_SDK_DIR=${SG200X_SDK_DIR}"
     "SG200X_CROSS_COMPILE=${SG200X_CROSS_COMPILE}"
+    "SG200X_TOOL_SUFFIX=${SG200X_TOOL_SUFFIX}"
     "OUTPUT_DIR=${SG200X_RUNTIME_OUTPUT_DIR}"
     "${SG200X_BASH}" -lc
     "exec '${CMAKE_SOURCE_DIR}/scripts/sg200x-sdk/build.sh'"
@@ -62,6 +72,7 @@ add_custom_target(deploy
   COMMAND ${CMAKE_COMMAND} -E env
     "SG200X_TARGET=${SG200X_TARGET}"
     "SG200X_SSH_PORT=${SG200X_SSH_PORT}"
+    "SG200X_BOARD_CONFIG=${SG200X_BOARD_DEPLOY_CONFIG}"
     "${SG200X_BASH}" -lc
     "exec '${CMAKE_SOURCE_DIR}/scripts/deploy_rtos_fw.sh' '${SG200X_RUNTIME_OUTPUT_DIR}/c906-mcu.elf'"
   DEPENDS firmware

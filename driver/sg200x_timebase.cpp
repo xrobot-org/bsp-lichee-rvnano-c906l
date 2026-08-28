@@ -4,18 +4,6 @@
 
 namespace LibXR
 {
-using InitFunction = void (*)();
-
-extern "C"
-{
-extern InitFunction __preinit_array_start[];
-extern InitFunction __preinit_array_end[];
-extern InitFunction __init_array_start[];
-extern InitFunction __init_array_end[];
-extern InitFunction __CTOR_LIST__[];
-extern InitFunction __CTOR_END__[];
-}
-
 namespace
 {
 uint32_t g_clock_hz = 0u;
@@ -40,38 +28,12 @@ uint64_t ticks_to_microseconds(uint64_t ticks)
   return whole * 1000000ULL + (remainder * 1000000ULL) / g_clock_hz;
 }
 
-}  // namespace
-
-// The vendor C906 start-up object is linked with -nostartfiles and therefore
-// does not provide the usual C++ runtime constructor walk. Keep the walk in
-// the XRobot library so the platform start-up can invoke it before main().
-extern "C" void sg200x_run_global_constructors()
-{
-  for (auto* function = __preinit_array_start; function != __preinit_array_end; ++function)
-  {
-    (*function)();
-  }
-  for (auto* function = __init_array_start; function != __init_array_end; ++function)
-  {
-    (*function)();
-  }
-  for (auto* function = __CTOR_LIST__; function != __CTOR_END__; ++function)
-  {
-    if (*function != nullptr && *function != reinterpret_cast<InitFunction>(-1))
-    {
-      (*function)();
-    }
-  }
-}
-
-namespace
-{
 SG200XTimebase g_sg200x_timebase;
 }  // namespace
 
-SG200XTimebase::SG200XTimebase(uintptr_t clint_base, uint32_t clock_hz)
+SG200XTimebase::SG200XTimebase(uint32_t clock_hz)
 {
-  if (clint_base == 0u || clock_hz == 0u)
+  if (clock_hz == 0u)
   {
     g_clock_hz = 0u;
     ConfigureWrapRange(0u, 0u);
@@ -79,7 +41,6 @@ SG200XTimebase::SG200XTimebase(uintptr_t clint_base, uint32_t clock_hz)
     return;
   }
 
-  (void)clint_base;
   g_clock_hz = clock_hz;
 
   // LibXR's public timestamp values are 32-bit milliseconds and microseconds

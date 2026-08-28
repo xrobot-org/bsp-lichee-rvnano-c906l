@@ -1,6 +1,5 @@
 #pragma once
 
-#include <cstddef>
 #include <cstdint>
 
 #include "timebase.hpp"
@@ -18,17 +17,13 @@ namespace LibXR
 class SG200XTimebase : public Timebase
 {
  public:
-  static constexpr uintptr_t CLINT_BASE = 0x74000000u;
-  static constexpr uint32_t MTIME_OFFSET = 0xBFF8u;
   static constexpr uint32_t DEFAULT_CLOCK_HZ = 25000000u;
 
   /**
-   * @param clint_base retained for source compatibility; it is ignored.
    * @param clock_hz time CSR frequency in Hz. This must match the
    *                 `timebase-frequency` value supplied to the firmware.
    */
-  explicit SG200XTimebase(uintptr_t clint_base = CLINT_BASE,
-                          uint32_t clock_hz = DEFAULT_CLOCK_HZ);
+  explicit SG200XTimebase(uint32_t clock_hz = DEFAULT_CLOCK_HZ);
 
   /** @brief Return the configured timer input frequency. */
   [[nodiscard]] static uint32_t ClockHz() noexcept;

@@ -6,10 +6,10 @@ diff --git a/freertos/cvitek/arch/riscv64/src/start.S b/freertos/cvitek/arch/ris
  	bltu a0, a1, 1b
  2:
  
-+	// Run C++ global constructors. The C906 firmware is linked with
++	// Initialize the C++ runtime. The C906 firmware is linked with
 +	// -nostartfiles, so the vendor start-up must perform this step explicitly.
-+	.extern sg200x_run_global_constructors
-+	call sg200x_run_global_constructors
++	.extern __libc_init_array
++	call __libc_init_array
 +
  	// argc, argv, envp is 0
 diff --git a/freertos/cvitek/scripts/cv181x_lscript.ld b/freertos/cvitek/scripts/cv181x_lscript.ld

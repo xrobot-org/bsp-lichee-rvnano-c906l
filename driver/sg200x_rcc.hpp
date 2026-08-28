@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 
 #include "libxr_def.hpp"
@@ -20,6 +21,9 @@ namespace LibXR
 class SG200XRCC final
 {
  public:
+  static_assert(std::atomic<uint32_t>::is_always_lock_free,
+                "SG200XRCC requires lock-free 32-bit atomics");
+
   using ClockId = SG200XClockTree::ClockId;
   using PeripheralId = SG200XClockTree::PeripheralId;
   using ResetId = SG200XClockTree::ResetId;
@@ -43,34 +47,45 @@ class SG200XRCC final
 
   [[nodiscard]] static SG200XRCC& Instance() noexcept;
 
-  /** Enable a modelled C906L clock path and apply its compile-time rate plan. */
+  /**
+   * Enable a modelled C906L clock path and apply its compile-time rate plan.
+   * Returns BUSY instead of waiting when another clock/reset update is active.
+   * This control-plane operation must not be called from an ISR.
+   */
   [[nodiscard]] ErrorCode EnableClock(ClockId clock) noexcept;
 
-  /** Release one active-low reset line from the board's reset-controller ABI. */
+  /**
+   * Release one active-low reset line from the board's reset-controller ABI.
+   * Returns BUSY instead of waiting and must not be called from an ISR.
+   */
   [[nodiscard]] ErrorCode ReleaseReset(ResetId reset) noexcept;
 
   /**
    * Enable every clock gate listed for an actual peripheral and release its
    * reset. This is idempotent; it does not assert/reset an active client.
+   * Returns BUSY instead of waiting and must not be called from an ISR.
    */
   [[nodiscard]] ErrorCode PreparePeripheral(PeripheralId peripheral) noexcept;
 
   /**
    * Enable a peripheral's clocks, assert its active-low reset, then release
    * it. The caller must ensure that no other client is using the peripheral.
+   * Returns BUSY instead of waiting and must not be called from an ISR.
    */
   [[nodiscard]] ErrorCode ResetPeripheral(PeripheralId peripheral) noexcept;
 
   /**
-   * Decode the live hardware rate. A zero result means invalid hardware state
-   * or an unmodelled fractional PLL path; callers must not substitute a
-   * guessed rate.
+   * Decode the live hardware rate. A zero result means invalid hardware state,
+   * an unmodelled fractional PLL path, or overlap with a clock/reset update;
+   * callers must not substitute a guessed rate. This method never waits.
    */
   [[nodiscard]] uint32_t ClockRate(ClockId clock) const noexcept;
 
  private:
   SG200XRCC() = default;
 
+  [[nodiscard]] bool TryBeginWrite() noexcept;
+  void EndWrite() noexcept;
   [[nodiscard]] ErrorCode EnableClockPathLocked(ClockId clock, uint8_t depth) noexcept;
   [[nodiscard]] ErrorCode ApplyC906LClockPlanLocked(ClockId clock,
                                                      uint8_t depth) noexcept;
@@ -78,6 +93,8 @@ class SG200XRCC final
   [[nodiscard]] ErrorCode PulseResetLocked(ResetId reset) noexcept;
   [[nodiscard]] uint32_t ClockRateRecursive(ClockId clock, uint8_t depth) const noexcept;
 
+  std::atomic_flag write_busy_ = ATOMIC_FLAG_INIT;
+  std::atomic<uint32_t> write_sequence_{0u};
   static SG200XRCC instance_;
 };
 

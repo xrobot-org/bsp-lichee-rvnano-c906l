@@ -10,31 +10,6 @@ namespace
 {
 constexpr uintptr_t CLOCK_GEN_BASE = 0x03002000u;
 constexpr uintptr_t RESET_CTRL_BASE = 0x03003000u;
-constexpr uintptr_t MSTATUS_MIE = 1u << 3u;
-
-class InterruptGuard final
-{
- public:
-  InterruptGuard() noexcept
-  {
-    asm volatile("csrrc %0, mstatus, %1" : "=r"(mstatus_) : "r"(MSTATUS_MIE)
-                 : "memory");
-  }
-
-  ~InterruptGuard()
-  {
-    if ((mstatus_ & MSTATUS_MIE) != 0u)
-    {
-      asm volatile("csrs mstatus, %0" : : "r"(MSTATUS_MIE) : "memory");
-    }
-  }
-
-  InterruptGuard(const InterruptGuard&) = delete;
-  InterruptGuard& operator=(const InterruptGuard&) = delete;
-
- private:
-  uintptr_t mstatus_ = 0u;
-};
 
 void IoFence() noexcept { asm volatile("fence iorw, iorw" ::: "memory"); }
 
@@ -115,7 +90,9 @@ void IoFence() noexcept { asm volatile("fence iorw, iorw" ::: "memory"); }
   }
   const uint64_t numerator =
       static_cast<uint64_t>(SG200XClockTree::OSCILLATOR_HZ) * multiplier;
-  return static_cast<uint32_t>(numerator / (pre_divider * post_divider));
+  const uint64_t denominator =
+      static_cast<uint64_t>(pre_divider) * post_divider;
+  return static_cast<uint32_t>(numerator / denominator);
 }
 
 [[nodiscard]] uint8_t ActiveParentIndex(
@@ -241,10 +218,37 @@ SG200XRCC SG200XRCC::instance_;
 
 SG200XRCC& SG200XRCC::Instance() noexcept { return instance_; }
 
+bool SG200XRCC::TryBeginWrite() noexcept
+{
+  if (write_busy_.test_and_set(std::memory_order_acquire))
+  {
+    return false;
+  }
+  write_sequence_.fetch_add(1u, std::memory_order_acq_rel);
+  return true;
+}
+
+void SG200XRCC::EndWrite() noexcept
+{
+  // Publish all device writes before readers can observe an even sequence.
+  IoFence();
+  write_sequence_.fetch_add(1u, std::memory_order_release);
+  write_busy_.clear(std::memory_order_release);
+}
+
 ErrorCode SG200XRCC::EnableClock(ClockId clock) noexcept
 {
-  InterruptGuard guard;
-  return EnableClockPathLocked(clock, 0u);
+  if (SG200XClockTree::Find(clock) == nullptr)
+  {
+    return ErrorCode::ARG_ERR;
+  }
+  if (!TryBeginWrite())
+  {
+    return ErrorCode::BUSY;
+  }
+  const ErrorCode result = EnableClockPathLocked(clock, 0u);
+  EndWrite();
+  return result;
 }
 
 ErrorCode SG200XRCC::EnableClockPathLocked(ClockId clock, uint8_t depth) noexcept
@@ -377,8 +381,13 @@ ErrorCode SG200XRCC::ReleaseReset(ResetId reset) noexcept
   {
     return ErrorCode::ARG_ERR;
   }
-  InterruptGuard guard;
-  return ReleaseResetLocked(reset);
+  if (!TryBeginWrite())
+  {
+    return ErrorCode::BUSY;
+  }
+  const ErrorCode result = ReleaseResetLocked(reset);
+  EndWrite();
+  return result;
 }
 
 ErrorCode SG200XRCC::ReleaseResetLocked(ResetId reset) noexcept
@@ -426,16 +435,25 @@ ErrorCode SG200XRCC::PreparePeripheral(PeripheralId peripheral) noexcept
     return ErrorCode::ARG_ERR;
   }
 
-  InterruptGuard guard;
+  if (!TryBeginWrite())
+  {
+    return ErrorCode::BUSY;
+  }
+  ErrorCode result = ErrorCode::OK;
   for (uint8_t index = 0u; index < resource->clock_count; ++index)
   {
-    const ErrorCode result = EnableClockPathLocked(resource->clocks[index], 0u);
+    result = EnableClockPathLocked(resource->clocks[index], 0u);
     if (result != ErrorCode::OK)
     {
-      return result;
+      break;
     }
   }
-  return ReleaseResetLocked(resource->reset);
+  if (result == ErrorCode::OK)
+  {
+    result = ReleaseResetLocked(resource->reset);
+  }
+  EndWrite();
+  return result;
 }
 
 ErrorCode SG200XRCC::ResetPeripheral(PeripheralId peripheral) noexcept
@@ -447,22 +465,38 @@ ErrorCode SG200XRCC::ResetPeripheral(PeripheralId peripheral) noexcept
     return ErrorCode::ARG_ERR;
   }
 
-  InterruptGuard guard;
+  if (!TryBeginWrite())
+  {
+    return ErrorCode::BUSY;
+  }
+  ErrorCode result = ErrorCode::OK;
   for (uint8_t index = 0u; index < resource->clock_count; ++index)
   {
-    const ErrorCode result = EnableClockPathLocked(resource->clocks[index], 0u);
+    result = EnableClockPathLocked(resource->clocks[index], 0u);
     if (result != ErrorCode::OK)
     {
-      return result;
+      break;
     }
   }
-  return PulseResetLocked(resource->reset);
+  if (result == ErrorCode::OK)
+  {
+    result = PulseResetLocked(resource->reset);
+  }
+  EndWrite();
+  return result;
 }
 
 uint32_t SG200XRCC::ClockRate(ClockId clock) const noexcept
 {
-  InterruptGuard guard;
-  return ClockRateRecursive(clock, 0u);
+  const uint32_t begin = write_sequence_.load(std::memory_order_acquire);
+  if ((begin & 1u) != 0u)
+  {
+    return 0u;
+  }
+  const uint32_t rate = ClockRateRecursive(clock, 0u);
+  IoFence();
+  const uint32_t end = write_sequence_.load(std::memory_order_acquire);
+  return begin == end && (end & 1u) == 0u ? rate : 0u;
 }
 
 uint32_t SG200XRCC::ClockRateRecursive(ClockId clock, uint8_t depth) const noexcept

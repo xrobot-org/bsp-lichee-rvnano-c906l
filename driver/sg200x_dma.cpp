@@ -23,6 +23,7 @@ constexpr uintptr_t TOP_BASE = 0x03000000u;
 constexpr uintptr_t DMA_REMAP0 = TOP_BASE + 0x154u;
 constexpr uintptr_t DMA_REMAP1 = TOP_BASE + 0x158u;
 constexpr uintptr_t DMA_INTERRUPT_MUX = TOP_BASE + 0x298u;
+constexpr uintptr_t PLIC_CLAIM_COMPLETE = 0x70200004u;
 constexpr uint32_t DMA_INTERRUPT_MUX_CPU0_SHIFT = 0u;
 constexpr uint32_t DMA_INTERRUPT_MUX_CPU1_SHIFT = 10u;
 constexpr uint32_t DMA_INTERRUPT_MUX_CPU2_SHIFT = 20u;
@@ -72,7 +73,13 @@ std::atomic<uint32_t> allocated{0u};
 // A transfer record is published before CHEN is written so a real hardware
 // completion cannot observe an empty callback.
 std::atomic<uint32_t> armed{0u};
-std::atomic<bool> initialized{false};
+enum class InitializationState : uint8_t
+{
+  UNINITIALIZED,
+  INITIALIZING,
+  READY,
+};
+std::atomic<InitializationState> initialization_state{InitializationState::UNINITIALIZED};
 std::atomic_flag interrupt_dispatching = ATOMIC_FLAG_INIT;
 SG200XDMAC::Transfer active[SG200XDMAC::CHANNEL_COUNT]{};
 
@@ -138,6 +145,19 @@ bool WaitForChannelDisabled(uint32_t bit)
   return channel < SG200XDMAC::CHANNEL_COUNT &&
          (SG200XDMAC::OWNED_CHANNEL_MASK & (1u << channel)) != 0u;
 }
+
+[[nodiscard]] constexpr size_t AlignUpToCacheLine(size_t size) noexcept
+{
+  return (size + HW_CACHE_LINE_SIZE - 1u) & ~(HW_CACHE_LINE_SIZE - 1u);
+}
+
+[[nodiscard]] bool OwnsCacheRange(uintptr_t address, size_t size,
+                                  size_t capacity) noexcept
+{
+  return (address % HW_CACHE_LINE_SIZE) == 0u &&
+         size <= static_cast<size_t>(-1) - (HW_CACHE_LINE_SIZE - 1u) &&
+         capacity >= AlignUpToCacheLine(size);
+}
 }  // namespace
 
 void SG200XDMAC::CleanForDevice(uintptr_t address, size_t size) noexcept
@@ -145,6 +165,16 @@ void SG200XDMAC::CleanForDevice(uintptr_t address, size_t size) noexcept
   if (size != 0u)
   {
     clean_dcache_range(address, size);
+  }
+}
+
+void SG200XDMAC::PrepareForDeviceWrite(uintptr_t address, size_t size) noexcept
+{
+  if (size != 0u)
+  {
+    // Preserve bytes outside a short transfer in its first/last cache line,
+    // then remove every destination line so no dirty eviction can race DMA.
+    flush_dcache_range(address, size);
   }
 }
 
@@ -158,58 +188,71 @@ void SG200XDMAC::InvalidateForCpu(uintptr_t address, size_t size) noexcept
 
 ErrorCode SG200XDMAC::Initialize()
 {
-  bool expected = false;
-  if (initialized.compare_exchange_strong(expected, true, std::memory_order_acq_rel))
+  InitializationState expected = InitializationState::UNINITIALIZED;
+  if (!initialization_state.compare_exchange_strong(
+          expected, InitializationState::INITIALIZING, std::memory_order_acq_rel,
+          std::memory_order_acquire))
   {
-    // Linux and C906L share one SDMA controller. Enable its clock/reset path,
-    // but never pulse the global reset because Linux can have live channels.
-    if (SG200XRCC::Instance().PreparePeripheral(SG200XRCC::PeripheralId::Sdma) !=
-        ErrorCode::OK)
-    {
-      initialized.store(false, std::memory_order_release);
-      return ErrorCode::STATE_ERR;
-    }
-    // A stopped remoteproc image can leave only its partition active. Retire
-    // those channels without disturbing Linux channels 0-3.
-    Register32(BASE + REG_CHEN) = OWNED_CHANNEL_MASK << 8u;
+    return expected == InitializationState::READY ? ErrorCode::OK : ErrorCode::BUSY;
+  }
+
+  // Linux and C906L share one SDMA controller. Enable its clock/reset path,
+  // but never pulse the global reset because Linux can have live channels.
+  if (SG200XRCC::Instance().PreparePeripheral(SG200XRCC::PeripheralId::Sdma) !=
+      ErrorCode::OK)
+  {
+    initialization_state.store(InitializationState::UNINITIALIZED,
+                               std::memory_order_release);
+    return ErrorCode::STATE_ERR;
+  }
+  // A stopped remoteproc image can leave only its partition active. Retire
+  // those channels without disturbing Linux channels 0-3.
+  Register32(BASE + REG_CHEN) = OWNED_CHANNEL_MASK << 8u;
+  asm volatile("fence iorw, iorw" ::: "memory");
+  if (!WaitForChannelDisabled(OWNED_CHANNEL_MASK))
+  {
+    Register32(BASE + REG_CHABORT) =
+        OWNED_CHANNEL_MASK | (OWNED_CHANNEL_MASK << 8u);
     asm volatile("fence iorw, iorw" ::: "memory");
     if (!WaitForChannelDisabled(OWNED_CHANNEL_MASK))
     {
-      Register32(BASE + REG_CHABORT) =
-          OWNED_CHANNEL_MASK | (OWNED_CHANNEL_MASK << 8u);
-      asm volatile("fence iorw, iorw" ::: "memory");
-      if (!WaitForChannelDisabled(OWNED_CHANNEL_MASK))
-      {
-        initialized.store(false, std::memory_order_release);
-        return ErrorCode::TIMEOUT;
-      }
+      initialization_state.store(InitializationState::UNINITIALIZED,
+                                 std::memory_order_release);
+      return ErrorCode::TIMEOUT;
     }
-    for (uint8_t channel = 0u; channel < CHANNEL_COUNT; ++channel)
-    {
-      if (IsOwnedChannel(channel))
-      {
-        Register32(ChannelAddress(channel, CH_INTCLEAR)) = 0xFFFFFFFFu;
-      }
-    }
-
-    // Remove C906L-owned channels from the other CPU routes and expose only
-    // those channels to CPU2. Preserve Linux channels and the common IRQ bit.
-    Register32(DMA_INTERRUPT_MUX) =
-        (Register32(DMA_INTERRUPT_MUX) &
-         ~(DMA_INTERRUPT_MUX_OWNED_OTHER_CPUS_MASK | DMA_INTERRUPT_MUX_CPU2_MASK)) |
-        DMA_INTERRUPT_MUX_OWNED_CPU2;
-    Register32(BASE + REG_CFG) |= CFG_DMAC_ENABLE | CFG_INTERRUPT_ENABLE;
-    if (request_irq == nullptr ||
-        request_irq(IRQ, &SG200XDMAC::InterruptHandler, 0u, "sg200x-dma", nullptr) != 0)
-    {
-      initialized.store(false, std::memory_order_release);
-      return ErrorCode::NOT_SUPPORT;
-    }
-    // irq_init() enables global MSTATUS.MIE but deliberately leaves MEIE to
-    // drivers. request_irq() has now installed the handler and unmasked PLIC
-    // source 25, so no unhandled SDMA completion can trap the C906L.
-    EnableMachineExternalInterrupts();
   }
+  for (uint8_t channel = 0u; channel < CHANNEL_COUNT; ++channel)
+  {
+    if (IsOwnedChannel(channel))
+    {
+      Register32(ChannelAddress(channel, CH_INTCLEAR)) = 0xFFFFFFFFu;
+    }
+  }
+
+  // Remove C906L-owned channels from the other CPU routes and expose only
+  // those channels to CPU2. Preserve Linux channels and the common IRQ bit.
+  Register32(DMA_INTERRUPT_MUX) =
+      (Register32(DMA_INTERRUPT_MUX) &
+       ~(DMA_INTERRUPT_MUX_OWNED_OTHER_CPUS_MASK | DMA_INTERRUPT_MUX_CPU2_MASK)) |
+      DMA_INTERRUPT_MUX_OWNED_CPU2;
+  Register32(BASE + REG_CFG) |= CFG_DMAC_ENABLE | CFG_INTERRUPT_ENABLE;
+  if (request_irq == nullptr ||
+      request_irq(IRQ, &SG200XDMAC::InterruptHandler, 0u, "sg200x-dma", nullptr) != 0)
+  {
+    initialization_state.store(InitializationState::UNINITIALIZED,
+                               std::memory_order_release);
+    return ErrorCode::NOT_SUPPORT;
+  }
+  // remoteproc reset does not reset the external PLIC context. Complete a
+  // source 25 claim that a previously stopped image may have left in service.
+  // The source must be enabled by request_irq() before this PLIC accepts EOI.
+  Register32(PLIC_CLAIM_COMPLETE) = IRQ;
+  asm volatile("fence iorw, iorw" ::: "memory");
+  // irq_init() enables global MSTATUS.MIE but deliberately leaves MEIE to
+  // drivers. request_irq() has now installed the handler and unmasked PLIC
+  // source 25, so no unhandled SDMA completion can trap the C906L.
+  EnableMachineExternalInterrupts();
+  initialization_state.store(InitializationState::READY, std::memory_order_release);
   return ErrorCode::OK;
 }
 
@@ -275,8 +318,20 @@ ErrorCode SG200XDMAC::Release(uint8_t channel, bool in_isr)
 
 ErrorCode SG200XDMAC::Start(uint8_t channel, const Transfer& transfer)
 {
+  const bool valid_direction = transfer.direction == Direction::MEMORY_TO_MEMORY ||
+                               transfer.direction == Direction::MEMORY_TO_PERIPHERAL ||
+                               transfer.direction == Direction::PERIPHERAL_TO_MEMORY;
+  const bool valid_width =
+      transfer.width == Width::BYTE || transfer.width == Width::HALF_WORD;
+  const bool valid_mode = transfer.mode == Mode::NORMAL || transfer.mode == Mode::CIRCULAR;
+  const uint8_t request = static_cast<uint8_t>(transfer.request);
+  const bool valid_request =
+      transfer.direction == Direction::MEMORY_TO_MEMORY ||
+      (request >= static_cast<uint8_t>(Request::SPI0_RX) &&
+       request <= static_cast<uint8_t>(Request::I2C4_TX));
   if (!IsOwnedChannel(channel) || transfer.memory == 0u || transfer.peripheral == 0u ||
-      transfer.count == 0u || transfer.count > 0x400000u || transfer.callback == nullptr)
+      transfer.count == 0u || transfer.count > 0x400000u || transfer.callback == nullptr ||
+      !valid_direction || !valid_width || !valid_mode || !valid_request)
   {
     return ErrorCode::ARG_ERR;
   }
@@ -292,14 +347,28 @@ ErrorCode SG200XDMAC::Start(uint8_t channel, const Transfer& transfer)
   }
 
   const size_t bytes = transfer.count << static_cast<uint8_t>(transfer.width);
-  if (transfer.direction == Direction::MEMORY_TO_PERIPHERAL ||
-      transfer.direction == Direction::MEMORY_TO_MEMORY)
+  if (transfer.direction == Direction::PERIPHERAL_TO_MEMORY &&
+      !OwnsCacheRange(transfer.memory, bytes, transfer.memory_capacity))
+  {
+    return ErrorCode::ARG_ERR;
+  }
+  if (transfer.direction == Direction::MEMORY_TO_MEMORY &&
+      !OwnsCacheRange(transfer.peripheral, bytes, transfer.peripheral_capacity))
+  {
+    return ErrorCode::ARG_ERR;
+  }
+  if (transfer.direction == Direction::MEMORY_TO_PERIPHERAL)
   {
     CleanForDevice(transfer.memory, bytes);
   }
+  else if (transfer.direction == Direction::PERIPHERAL_TO_MEMORY)
+  {
+    PrepareForDeviceWrite(transfer.memory, bytes);
+  }
   else
   {
-    InvalidateForCpu(transfer.memory, bytes);
+    CleanForDevice(transfer.memory, bytes);
+    PrepareForDeviceWrite(transfer.peripheral, bytes);
   }
 
   if (transfer.direction != Direction::MEMORY_TO_MEMORY)

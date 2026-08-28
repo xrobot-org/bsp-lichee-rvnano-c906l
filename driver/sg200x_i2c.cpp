@@ -18,6 +18,7 @@ constexpr uint32_t SCL_FALL_NS = 300u;
 constexpr uint32_t SDA_HOLD_NS = 300u;
 constexpr uint32_t SDA_SETUP_NS = 1000u;
 constexpr uint32_t SPIKE_SUPPRESSION_NS = 50u;
+constexpr uintptr_t PLIC_CLAIM_COMPLETE = 0x70200004u;
 
 [[nodiscard]] constexpr uint32_t ClockCyclesForNanoseconds(uint32_t clock_hz,
                                                            uint32_t nanoseconds)
@@ -42,33 +43,117 @@ constexpr uint32_t SPIKE_SUPPRESSION_NS = 50u;
 }
 }  // namespace
 
+std::atomic<bool> SG200XI2C::controller_claimed_[CONTROLLER_COUNT]{};
+std::atomic<SG200XI2C*> SG200XI2C::instances_[CONTROLLER_COUNT]{};
+bool SG200XI2C::irq_registered_[CONTROLLER_COUNT]{};
+
 SG200XI2C::SG200XI2C(Controller controller, RawData tx_command_buffer, RawData rx_buffer,
                      Configuration config)
     : tx_stage_(tx_command_buffer), rx_stage_(rx_buffer)
 {
   const auto index = static_cast<uint8_t>(controller);
-  if (index >= 5u || tx_stage_.addr_ == nullptr || rx_stage_.addr_ == nullptr ||
+  if (index >= CONTROLLER_COUNT || tx_stage_.addr_ == nullptr ||
+      rx_stage_.addr_ == nullptr ||
       tx_stage_.size_ < sizeof(uint16_t) || rx_stage_.size_ < sizeof(uint16_t) ||
       (reinterpret_cast<uintptr_t>(tx_stage_.addr_) % HW_CACHE_LINE_SIZE) != 0u ||
       (reinterpret_cast<uintptr_t>(rx_stage_.addr_) % HW_CACHE_LINE_SIZE) != 0u ||
+      (tx_stage_.size_ % HW_CACHE_LINE_SIZE) != 0u ||
+      (rx_stage_.size_ % HW_CACHE_LINE_SIZE) != 0u ||
       request_irq == nullptr)
   {
     return;
   }
-  const auto peripheral = static_cast<SG200XRCC::PeripheralId>(
-      static_cast<uint8_t>(SG200XRCC::PeripheralId::I2c0) + index);
-  SG200XRCC& rcc = SG200XRCC::Instance();
-  if (rcc.PreparePeripheral(peripheral) != ErrorCode::OK ||
-      (input_clock_hz_ = rcc.ClockRate(SG200XRCC::ClockId::I2c)) == 0u)
+  bool unclaimed = false;
+  if (!controller_claimed_[index].compare_exchange_strong(
+          unclaimed, true, std::memory_order_acq_rel, std::memory_order_acquire))
   {
     return;
   }
+  controller_index_ = index;
+  const auto peripheral = static_cast<SG200XRCC::PeripheralId>(
+      static_cast<uint8_t>(SG200XRCC::PeripheralId::I2c0) + index);
+  SG200XRCC& rcc = SG200XRCC::Instance();
+  if (rcc.PreparePeripheral(peripheral) != ErrorCode::OK)
+  {
+    controller_index_ = 0xFFu;
+    controller_claimed_[index].store(false, std::memory_order_release);
+    return;
+  }
+  input_clock_hz_ = rcc.ClockRate(SG200XRCC::ClockId::I2c);
+  if (input_clock_hz_ == 0u)
+  {
+    controller_index_ = 0xFFu;
+    controller_claimed_[index].store(false, std::memory_order_release);
+    return;
+  }
   base_ = I2C0_BASE + static_cast<uintptr_t>(index) * STRIDE;
-  if (SetConfig(config) != ErrorCode::OK ||
-      request_irq(IRQ0 + index, &Interrupt, 0u, "sg200x-i2c", this) != 0)
+  if (SetConfig(config) != ErrorCode::OK)
   {
     base_ = 0u;
+    controller_index_ = 0xFFu;
+    controller_claimed_[index].store(false, std::memory_order_release);
+    return;
   }
+
+  bool registration_ok = true;
+  instances_[index].store(this, std::memory_order_release);
+  if (!irq_registered_[index])
+  {
+    if (request_irq(IRQ0 + index, &Interrupt, 0u, "sg200x-i2c", nullptr) != 0)
+    {
+      registration_ok = false;
+    }
+    else
+    {
+      // C906L reset does not reset the external PLIC context. Retire a claim
+      // left in service if remoteproc stopped the previous image in this ISR.
+      // The initialized instance was published before request_irq(), so an
+      // interrupt arriving in this window can be dispatched without masking
+      // machine interrupts.
+      Register32(PLIC_CLAIM_COMPLETE) = IRQ0 + index;
+      asm volatile("fence iorw, iorw" ::: "memory");
+      irq_registered_[index] = true;
+    }
+  }
+  if (!registration_ok)
+  {
+    SG200XI2C* expected = this;
+    (void)instances_[index].compare_exchange_strong(
+        expected, nullptr, std::memory_order_acq_rel, std::memory_order_acquire);
+    base_ = 0u;
+    controller_index_ = 0xFFu;
+    controller_claimed_[index].store(false, std::memory_order_release);
+  }
+}
+
+SG200XI2C::~SG200XI2C()
+{
+  const uint8_t index = controller_index_;
+  if (index >= CONTROLLER_COUNT)
+  {
+    return;
+  }
+
+  faulted_.store(true, std::memory_order_release);
+  if (active_.load(std::memory_order_acquire))
+  {
+    Complete(ErrorCode::FAILED, false, false);
+  }
+  if (base_ != 0u)
+  {
+    Register32(base_, REG_DMA_CR) = 0u;
+    Register32(base_, REG_INTR_MASK) = 0u;
+    (void)Enable(false);
+    const uint32_t clear = Register32(base_, REG_CLR_INTR);
+    (void)clear;
+  }
+  asm volatile("fence iorw, iorw" ::: "memory");
+  SG200XI2C* expected = this;
+  (void)instances_[index].compare_exchange_strong(
+      expected, nullptr, std::memory_order_acq_rel, std::memory_order_acquire);
+  base_ = 0u;
+  controller_index_ = 0xFFu;
+  controller_claimed_[index].store(false, std::memory_order_release);
 }
 
 ErrorCode SG200XI2C::Enable(bool enabled) const
@@ -162,6 +247,17 @@ ErrorCode SG200XI2C::Start(uint16_t slave, const uint8_t* prefix, size_t prefix_
   {
     return ErrorCode::STATE_ERR;
   }
+  Operation<ErrorCode>& requested_operation =
+      read_op != nullptr ? *read_op : *write_op;
+  if ((requested_operation.type == Operation<ErrorCode>::OperationType::CALLBACK &&
+       requested_operation.data.callback == nullptr) ||
+      (requested_operation.type == Operation<ErrorCode>::OperationType::BLOCK &&
+       requested_operation.data.sem_info.sem == nullptr) ||
+      (requested_operation.type == Operation<ErrorCode>::OperationType::POLLING &&
+       requested_operation.data.status == nullptr))
+  {
+    return ErrorCode::ARG_ERR;
+  }
   bool inactive = false;
   if (!active_.compare_exchange_strong(inactive, true, std::memory_order_acq_rel,
                                        std::memory_order_acquire))
@@ -176,10 +272,9 @@ ErrorCode SG200XI2C::Start(uint16_t slave, const uint8_t* prefix, size_t prefix_
   if (prefix_size == 0u && write_size == 0u && read.size_ == 0u)
   {
     active_.store(false, std::memory_order_release);
-    Operation<ErrorCode>* op = read_op != nullptr ? read_op : write_op;
-    if (op->type != Operation<ErrorCode>::OperationType::BLOCK)
+    if (requested_operation.type != Operation<ErrorCode>::OperationType::BLOCK)
     {
-      op->UpdateStatus(false, ErrorCode::OK);
+      requested_operation.UpdateStatus(false, ErrorCode::OK);
     }
     return ErrorCode::OK;
   }
@@ -229,7 +324,7 @@ ErrorCode SG200XI2C::Start(uint16_t slave, const uint8_t* prefix, size_t prefix_
     return result;
   }
   read_target_ = read;
-  operation_ = read_op != nullptr ? *read_op : *write_op;
+  operation_ = requested_operation;
   tx_done_ = false;
   rx_done_ = read.size_ == 0u;
   stop_done_ = false;
@@ -266,6 +361,7 @@ ErrorCode SG200XI2C::Start(uint16_t slave, const uint8_t* prefix, size_t prefix_
   {
     result = SG200XDMAC::Start(
         rx_channel_, {.memory = reinterpret_cast<uintptr_t>(rx_stage_.addr_),
+                      .memory_capacity = rx_stage_.size_,
                       .peripheral = base_ + REG_DATA_CMD,
                       .count = read.size_,
                       .request = static_cast<SG200XDMAC::Request>(
@@ -280,6 +376,7 @@ ErrorCode SG200XI2C::Start(uint16_t slave, const uint8_t* prefix, size_t prefix_
   {
     result = SG200XDMAC::Start(
         tx_channel_, {.memory = reinterpret_cast<uintptr_t>(tx_stage_.addr_),
+                      .memory_capacity = tx_stage_.size_,
                       .peripheral = base_ + REG_DATA_CMD,
                       .count = commands,
                       .request = static_cast<SG200XDMAC::Request>(
@@ -340,9 +437,19 @@ void SG200XI2C::OnDma(bool rx, ErrorCode result, bool in_isr)
   }
 }
 
-int SG200XI2C::Interrupt(int, void* c)
+int SG200XI2C::Interrupt(int irq, void*)
 {
-  auto* self = static_cast<SG200XI2C*>(c);
+  if (irq < static_cast<int>(IRQ0) ||
+      irq >= static_cast<int>(IRQ0 + CONTROLLER_COUNT))
+  {
+    return 0;
+  }
+  SG200XI2C* self = instances_[static_cast<uint8_t>(irq - IRQ0)].load(
+      std::memory_order_acquire);
+  if (self == nullptr || self->base_ == 0u)
+  {
+    return 0;
+  }
   const uint32_t raw = Register32(self->base_, REG_RAW);
   if (raw & INTR_ABRT)
   {
