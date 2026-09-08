@@ -164,9 +164,11 @@ I2C, and SPI driver work is DMA-only as specified in `driver/README.md`.
 
 The C906L `DEFAULT_C906L_CLOCK_PLAN` configures `CLK_SPI` from the board's
 1.5 GHz FPLL input with divider 8, yielding a 187.5 MHz SSI input. All SPI0-3
-share that root clock; the plan is defined and compile-time checked in
-`driver/sg200x_clock_tree.hpp`, rather than being hidden in a peripheral
-constructor or application.
+share that root clock. `driver/sg200x_clock_tree.hpp` keeps the graph and
+static correctness checks; its value-parameter planner also accepts runtime
+rates. `SG200XRCC` applies plans and controls gates at runtime while preserving
+the boot-owned PLL/CPU clock contract. Explicit rate changes survive later
+peripheral preparation.
 
 ## DMA Ownership
 
