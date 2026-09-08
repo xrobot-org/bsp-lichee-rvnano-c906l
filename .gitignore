@@ -12,3 +12,12 @@ __pycache__/
 /*.err
 /nul
 /scripts/.deploy-lf.sh
+
+# Camera development artifacts belong to this product workspace.
+/camera.h264
+/vendor-*.png
+/vi-*.png
+/tools/sc035hgs-reg/sc035hgs-reg
+/tools/sg2002-camera-bridge/sg2002-camera-bridge
+/tools/sg2002-camera-bridge/test_mmf.board
+/tools/sg2002-camera-bridge/*.so

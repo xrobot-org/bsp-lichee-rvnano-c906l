@@ -1,4 +1,22 @@
-# SG200x C906L BSP
+# Guidance Action firmware workspace
+
+This repository contains the application firmware for SG2002 C906L. Shared
+SGLL integration and `driver/` refactors are synchronized from
+[xrobot-org/bsp-lichee-rvnano-c906l](https://github.com/xrobot-org/bsp-lichee-rvnano-c906l).
+The BSP template retains its LED sample; product `User/` code and camera tools
+are maintained here.
+
+The current application sends native 640x480 H.264 camera frames through the
+shared-DDR mailbox and C906 SPI2 DMA to an ESP32-C5 Wi-Fi bridge. The paired
+configuration was measured at 30.03 decoded fps over 90 seconds, with 2704
+frames and no video RTP loss or decoding errors in that window. The default
+profile uses 512 kbit/s, mode-1 SPI at 5.859375 MHz, 64-2048-byte records, and
+at least 2 ms between records for the four-wire slave's DMA rearm.
+
+`User/CMakeLists.txt` owns the application source list. Camera mailbox tests
+live in `User/tests`; Linux producer and receiver tools and the persistent
+camera profile live in [tools/sg2002-camera-bridge](tools/sg2002-camera-bridge/README.md).
+The ESP32-C5 companion firmware is maintained in the separate `razver` workspace.
 
 This is a C906 FreeRTOS BSP with an MCU-style source layout. It deliberately
 does not carry a second FreeRTOS RISC-V port. Firmware startup, trap handling,
@@ -180,5 +198,7 @@ the other CPUs, and routes them to the C906L CPU2 domain while preserving the
 Linux partition. Both sides must keep that channel partition and must not
 rewrite the other side's remap, enable, or interrupt bits.
 
-The main branch contains only the LED blink application. Board stress and
-validation firmware is retained separately in the `codex/stress-tests` branch.
+Shared platform updates can be brought in as individual commits from the BSP
+template remote. Keep application changes in separate commits so later driver
+updates can be reviewed and cherry-picked independently. Firmware outputs,
+SDK staging, local reports, and reference documents remain Git-ignored.
