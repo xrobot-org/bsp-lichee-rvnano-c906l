@@ -1,502 +1,545 @@
 #include "sg200x_rcc.hpp"
 
-#include <array>
-
-#include "sg200x_mmio.hpp"
+#include "sg200x_ll_rcc.h"
 
 namespace LibXR
 {
-namespace
-{
-constexpr uintptr_t CLOCK_GEN_BASE = 0x03002000u;
-constexpr uintptr_t RESET_CTRL_BASE = 0x03003000u;
+namespace Tree = SG200XClockTree;
 
-void IoFence() noexcept { asm volatile("fence iorw, iorw" ::: "memory"); }
-
-[[nodiscard]] constexpr uint32_t Mask(uint8_t width) noexcept
+namespace detail
 {
-  return width == 0u
-             ? 0u
-             : (width >= 32u ? UINT32_MAX
-                             : (static_cast<uint32_t>(1u) << width) - 1u);
+inline uint32_t RccField(const SG200XClockTree::RegisterField& field) noexcept
+{
+  return field.Exists() ? sgll_rcc_field_read(field.offset, field.shift, field.width)
+                        : 0u;
 }
 
-[[nodiscard]] uint32_t ReadField(
-    const SG200XClockTree::RegisterField& field) noexcept
-{
-  if (!SG200XClockTree::IsFieldWellFormed(field) || !field.Exists())
-  {
-    return 0u;
-  }
-  return (Register32(CLOCK_GEN_BASE + field.offset) >> field.shift) &
-         Mask(field.width);
-}
-
-[[nodiscard]] bool SetField(const SG200XClockTree::RegisterField& field,
-                            bool enabled) noexcept
-{
-  if (!SG200XClockTree::IsFieldWellFormed(field) || !field.Exists() ||
-      field.width != 1u)
-  {
-    return false;
-  }
-  auto& value = Register32(CLOCK_GEN_BASE + field.offset);
-  const uint32_t bit = static_cast<uint32_t>(1u) << field.shift;
-  value = enabled ? value | bit : value & ~bit;
-  IoFence();
-  return (value & bit) == (enabled ? bit : 0u);
-}
-
-[[nodiscard]] bool WriteField(const SG200XClockTree::RegisterField& field,
-                              uint32_t value) noexcept
-{
-  if (!SG200XClockTree::IsFieldWellFormed(field) || !field.Exists() ||
-      value > Mask(field.width))
-  {
-    return false;
-  }
-  auto& reg = Register32(CLOCK_GEN_BASE + field.offset);
-  const uint32_t field_mask = Mask(field.width) << field.shift;
-  reg = (reg & ~field_mask) | (value << field.shift);
-  IoFence();
-  return ((reg & field_mask) >> field.shift) == value;
-}
-
-[[nodiscard]] uint32_t DividerValue(
-    const SG200XClockTree::Divider& divider) noexcept
+inline uint32_t RccDividerValue(const SG200XClockTree::Divider& divider) noexcept
 {
   if (!divider.Exists())
   {
     return 1u;
   }
-  const uint32_t value = Register32(CLOCK_GEN_BASE + divider.field.offset);
-  // All described CV181x mux/divider branches use bit 3 as their valid flag.
-  if (divider.reset_value != 0u && (value & Bit(3u)) == 0u)
+  if (divider.reset_value != 0u &&
+      !sgll_rcc_div_uses_register_factor(divider.field.offset))
   {
     return divider.reset_value;
   }
-  return (value >> divider.field.shift) & Mask(divider.field.width);
+  return sgll_rcc_div_factor_raw_get(divider.field.offset, divider.field.width);
 }
 
-[[nodiscard]] uint32_t G6PllRate(uint16_t csr) noexcept
+inline uint8_t RccParentIndex(const SG200XClockTree::ClockNode& node) noexcept
 {
-  const uint32_t value = Register32(CLOCK_GEN_BASE + csr);
-  const uint32_t pre_divider = value & 0x7Fu;
-  const uint32_t post_divider = (value >> 8u) & 0x7Fu;
-  const uint32_t multiplier = (value >> 17u) & 0x7Fu;
-  if (pre_divider == 0u || post_divider == 0u || multiplier == 0u)
+  if (node.kind == SG200XClockTree::NodeKind::Gate)
   {
     return 0u;
   }
-  const uint64_t numerator =
-      static_cast<uint64_t>(SG200XClockTree::OSCILLATOR_HZ) * multiplier;
-  const uint64_t denominator =
-      static_cast<uint64_t>(pre_divider) * post_divider;
-  return static_cast<uint32_t>(numerator / denominator);
-}
-
-[[nodiscard]] uint8_t ActiveParentIndex(
-    const SG200XClockTree::ClockNode& node) noexcept
-{
-  using NodeKind = SG200XClockTree::NodeKind;
-  if (node.kind == NodeKind::Gate)
-  {
-    return 0u;
-  }
-  if (node.kind != NodeKind::MuxDividerGate)
-  {
-    return 0xFFu;
-  }
-  if (node.bypass.Exists() && ReadField(node.bypass) != 0u)
+  if (node.bypass.Exists() && RccField(node.bypass) != 0u)
   {
     return 0u;
   }
   if (node.path_select.Exists())
   {
-    // The vendor driver's get_clk_sel() inverts the register bit.
-    return ReadField(node.path_select) == 0u
+    return RccField(node.path_select) == 0u
                ? 1u
-               : static_cast<uint8_t>(2u + ReadField(node.source_select));
+               : static_cast<uint8_t>(2u + RccField(node.source_select));
   }
   if (node.source_select.Exists())
   {
     return static_cast<uint8_t>((node.bypass.Exists() ? 1u : 0u) +
-                                ReadField(node.source_select));
+                                RccField(node.source_select));
   }
   return node.bypass.Exists() ? 1u : 0u;
 }
 
-struct RegisterSnapshot
+inline uint32_t RccG6PllRate(uint16_t csr) noexcept
 {
-  std::array<uintptr_t, 3u> addresses{};
-  std::array<uint32_t, 3u> values{};
-  uint8_t count = 0u;
-
-  void Add(const SG200XClockTree::RegisterField& field) noexcept
+  const uint32_t value = sgll_rcc_g6_pll_read(csr);
+  const uint32_t pre = sgll_field_get(value, PLL_G6_PREDIV_SHIFT, PLL_G6_DIVIDER_WIDTH);
+  const uint32_t post = sgll_field_get(value, PLL_G6_POSTDIV_SHIFT, PLL_G6_DIVIDER_WIDTH);
+  const uint32_t multiplier =
+      sgll_field_get(value, PLL_G6_MULTIPLIER_SHIFT, PLL_G6_DIVIDER_WIDTH);
+  if (pre == 0u || post == 0u || multiplier == 0u)
   {
-    if (!field.Exists())
-    {
-      return;
-    }
-    const uintptr_t address = CLOCK_GEN_BASE + field.offset;
-    for (uint8_t index = 0u; index < count; ++index)
-    {
-      if (addresses[index] == address)
-      {
-        return;
-      }
-    }
-    if (count < addresses.size())
-    {
-      addresses[count] = address;
-      values[count] = Register32(address);
-      ++count;
-    }
+    return 0u;
+  }
+  return static_cast<uint32_t>(
+      (static_cast<uint64_t>(SG200XClockTree::OSCILLATOR_HZ) * multiplier) /
+      (static_cast<uint64_t>(pre) * post));
+}
+}  // namespace detail
+
+SG200XRCC SG200XRCC::instance_{};
+
+struct SG200XRCC::Transaction
+{
+  struct Change
+  {
+    Tree::RegisterField field{};
+    uint32_t previous = 0u;
+  };
+  SG200XRCC& owner;
+  std::array<Change, Tree::MAX_CLOCK_DEPTH * 3u + 8u> changes{};
+  std::array<bool, Tree::NODES.size()> configured;
+  std::size_t count = 0u;
+  bool committed = false;
+
+  explicit Transaction(SG200XRCC& controller) noexcept
+      : owner(controller), configured(controller.configured_)
+  {
   }
 
-  [[nodiscard]] bool Restore() const noexcept
+  static bool Store(const Tree::RegisterField& field, uint32_t value) noexcept
   {
-    for (uint8_t index = 0u; index < count; ++index)
+    if (!Tree::IsFieldWellFormed(field) || !field.Exists() ||
+        static_cast<uint64_t>(value) >= (uint64_t{1u} << field.width))
+      return false;
+    return sgll_rcc_field_write(field.offset, field.shift, field.width, value);
+  }
+
+  bool Write(const Tree::RegisterField& field, uint32_t value) noexcept
+  {
+    if (!field.Exists() || !Tree::IsFieldWellFormed(field) ||
+        static_cast<uint64_t>(value) >= (uint64_t{1u} << field.width))
+      return false;
+    const uint32_t previous = detail::RccField(field);
+    if (previous == value) return true;
+    if (count == changes.size()) return false;
+    changes[count++] = {field, previous};
+    return Store(field, value);
+  }
+
+  void Commit() noexcept
+  {
+    owner.configured_ = configured;
+    committed = true;
+  }
+
+  ~Transaction()
+  {
+    if (!committed)
     {
-      Register32(addresses[index]) = values[index];
-    }
-    IoFence();
-    for (uint8_t index = 0u; index < count; ++index)
-    {
-      if (Register32(addresses[index]) != values[index])
+      while (count != 0u)
       {
-        return false;
+        const Change& change = changes[--count];
+        (void)Store(change.field, change.previous);
       }
     }
-    return true;
+    owner.EndWrite();
   }
 };
 
-[[nodiscard]] bool IsPlanRouteActive(
-    const SG200XClockTree::ClockNode& node,
-    const SG200XClockTree::ClockRatePlan& plan) noexcept
+namespace
 {
-  if (ReadField(node.divider0.field) != plan.divider ||
-      (node.divider0.reset_value != 0u &&
-       (Register32(CLOCK_GEN_BASE + node.divider0.field.offset) & Bit(3u)) == 0u))
+ErrorCode PlanError(Tree::PlanStatus status) noexcept
+{
+  switch (status)
   {
-    return false;
+    case Tree::PlanStatus::Ok:
+      return ErrorCode::OK;
+    case Tree::PlanStatus::Busy:
+      return ErrorCode::BUSY;
+    case Tree::PlanStatus::ReadOnlyClock:
+    case Tree::PlanStatus::UnattainableRate:
+      return ErrorCode::NOT_SUPPORT;
+    case Tree::PlanStatus::UnknownParentRate:
+      return ErrorCode::STATE_ERR;
+    default:
+      return ErrorCode::ARG_ERR;
   }
-  if (node.bypass.Exists() &&
-      ReadField(node.bypass) != (plan.parent_index == 0u ? 1u : 0u))
-  {
-    return false;
-  }
-  if (plan.parent_index != 0u && node.source_select.Exists())
-  {
-    const uint8_t expected = static_cast<uint8_t>(
-        plan.parent_index - (node.bypass.Exists() ? 1u : 0u));
-    if (ReadField(node.source_select) != expected)
-    {
-      return false;
-    }
-  }
-  return true;
 }
 
-[[nodiscard]] bool ResetAddressAndBit(SG200XClockTree::ResetId reset,
-                                      uintptr_t& address,
-                                      uint32_t& bit) noexcept
+uint64_t PlanErrorNumerator(const Tree::ClockRatePlan& plan) noexcept
 {
-  if (!SG200XClockTree::IsKnownReset(reset))
-  {
-    return false;
-  }
-  const uint16_t id = static_cast<uint16_t>(reset);
-  address = RESET_CTRL_BASE + static_cast<uintptr_t>(id / 32u) * 4u;
-  bit = static_cast<uint32_t>(1u) << (id % 32u);
-  return true;
+  const uint64_t desired = static_cast<uint64_t>(plan.target_rate_hz) * plan.divider;
+  return desired >= plan.parent_rate_hz ? desired - plan.parent_rate_hz
+                                        : plan.parent_rate_hz - desired;
 }
 }  // namespace
-
-SG200XRCC SG200XRCC::instance_;
 
 SG200XRCC& SG200XRCC::Instance() noexcept { return instance_; }
 
 bool SG200XRCC::TryBeginWrite() noexcept
 {
-  if (write_busy_.test_and_set(std::memory_order_acquire))
-  {
-    return false;
-  }
+  if (write_busy_.test_and_set(std::memory_order_acquire)) return false;
   write_sequence_.fetch_add(1u, std::memory_order_acq_rel);
   return true;
 }
 
 void SG200XRCC::EndWrite() noexcept
 {
-  // Publish all device writes before readers can observe an even sequence.
-  IoFence();
+  sgll_csr_fence_io();
   write_sequence_.fetch_add(1u, std::memory_order_release);
   write_busy_.clear(std::memory_order_release);
 }
 
-ErrorCode SG200XRCC::EnableClock(ClockId clock) noexcept
+SG200XRCC::ClockRatePlan SG200XRCC::PlanRateLocked(ClockId clock, uint32_t target_rate_hz,
+                                                   RatePolicy policy) const noexcept
 {
-  if (SG200XClockTree::Find(clock) == nullptr)
+  ClockRatePlan best{};
+  best.clock = clock;
+  best.target_rate_hz = target_rate_hz;
+  best.policy = policy;
+  const auto* node = Tree::RateControlNode(clock);
+  if (node == nullptr) return best;
+  if (target_rate_hz == 0u ||
+      static_cast<uint8_t>(policy) > static_cast<uint8_t>(RatePolicy::Exact))
   {
-    return ErrorCode::ARG_ERR;
+    best.status = Tree::PlanStatus::InvalidRate;
+    return best;
   }
-  if (!TryBeginWrite())
+  if (node->ownership != Tree::Ownership::C906LManaged ||
+      node->kind != Tree::NodeKind::MuxDividerGate || node->path_select.Exists())
   {
+    best.status = Tree::PlanStatus::ReadOnlyClock;
+    return best;
+  }
+  best.status = Tree::PlanStatus::UnknownParentRate;
+  const uint8_t current_parent = detail::RccParentIndex(*node);
+  for (uint8_t index = 0u; index < node->parents.count; ++index)
+  {
+    const ClockId parent = node->parents.ids[index];
+    const uint32_t parent_rate = ClockRateRecursive(parent, 0u);
+    if (parent_rate == 0u) continue;
+    if (!best.IsValid()) best.status = Tree::PlanStatus::UnattainableRate;
+    const ClockRatePlan candidate =
+        Tree::MakeRatePlan(clock, parent, parent_rate, target_rate_hz, policy);
+    if (!candidate.IsValid()) continue;
+    const uint64_t candidate_error = PlanErrorNumerator(candidate) * best.divider;
+    const uint64_t best_error = PlanErrorNumerator(best) * candidate.divider;
+    if (!best.IsValid() || candidate_error < best_error ||
+        (candidate_error == best_error && index == current_parent &&
+         best.parent_index != current_parent))
+    {
+      best = candidate;
+    }
+  }
+  return best;
+}
+
+SG200XRCC::ClockRatePlan SG200XRCC::PlanRate(ClockId clock, uint32_t target_rate_hz,
+                                             RatePolicy policy) const noexcept
+{
+  const uint32_t before = write_sequence_.load(std::memory_order_acquire);
+  ClockRatePlan plan{};
+  plan.clock = clock;
+  plan.target_rate_hz = target_rate_hz;
+  if ((before & 1u) == 0u) plan = PlanRateLocked(clock, target_rate_hz, policy);
+  sgll_csr_fence_io();
+  if ((before & 1u) != 0u || before != write_sequence_.load(std::memory_order_acquire))
+    plan.status = Tree::PlanStatus::Busy;
+  return plan;
+}
+
+SG200XRCC::ClockRatePlan SG200XRCC::PlanRate(PeripheralId peripheral,
+                                             uint32_t target_rate_hz,
+                                             RatePolicy policy) const noexcept
+{
+  const auto* resource = Tree::Find(peripheral);
+  return PlanRate(resource == nullptr ? ClockId::None : resource->rate_clock,
+                  target_rate_hz, policy);
+}
+
+bool SG200XRCC::PlanMatchesHardware(const ClockRatePlan& plan) const noexcept
+{
+  const auto* node = Tree::Find(plan.rate_clock);
+  if (node == nullptr || detail::RccParentIndex(*node) != plan.parent_index) return false;
+  if (node->bypass.Exists() && plan.parent_index == 0u) return true;
+  return sgll_rcc_div_reset_is_deasserted(node->divider0.field.offset) &&
+         detail::RccDividerValue(node->divider0) == plan.divider;
+}
+
+bool SG200XRCC::PathContains(ClockId clock, ClockId ancestor,
+                             uint8_t depth) const noexcept
+{
+  if (clock == ancestor) return true;
+  if (depth >= Tree::MAX_CLOCK_DEPTH) return false;
+  const auto* node = Tree::Find(clock);
+  if (node == nullptr || node->parents.count == 0u) return false;
+  const uint8_t parent = node->parents.count == 1u ? 0u : detail::RccParentIndex(*node);
+  return parent < node->parents.count &&
+         PathContains(node->parents.ids[parent], ancestor, depth + 1u);
+}
+
+bool SG200XRCC::HasEnabledDependent(ClockId clock) const noexcept
+{
+  for (const auto& node : Tree::NODES)
+  {
+    if (node.id != clock && node.gate.Exists() && detail::RccField(node.gate) != 0u &&
+        PathContains(node.id, clock, 0u))
+      return true;
+  }
+  return false;
+}
+
+void SG200XRCC::RememberPath(ClockId clock, Transaction& transaction,
+                             uint8_t depth) noexcept
+{
+  if (depth >= Tree::MAX_CLOCK_DEPTH) return;
+  const auto* node = Tree::Find(clock);
+  const std::size_t index = Tree::NodeIndex(clock);
+  if (node == nullptr || index == Tree::NODES.size()) return;
+  transaction.configured[index] = true;
+  if (node->parents.count == 0u) return;
+  const uint8_t parent = node->parents.count == 1u ? 0u : detail::RccParentIndex(*node);
+  if (parent < node->parents.count)
+    RememberPath(node->parents.ids[parent], transaction, depth + 1u);
+}
+
+ErrorCode SG200XRCC::ApplyClockPlanLocked(const ClockRatePlan& plan,
+                                          Transaction& transaction, bool startup) noexcept
+{
+  if (!Tree::IsClockPlanWellFormed(plan)) return ErrorCode::ARG_ERR;
+  const auto* node = Tree::Find(plan.rate_clock);
+  if (ClockRateRecursive(plan.parent, 0u) != plan.parent_rate_hz)
+    return ErrorCode::CHECK_ERR;
+  const bool matches = PlanMatchesHardware(plan);
+  const bool system_bus = Tree::IsSystemBusClock(node->id);
+  const bool was_enabled = detail::RccField(node->gate) != 0u;
+  if (system_bus && !matches && (!startup || was_enabled)) return ErrorCode::NOT_SUPPORT;
+  if (!matches && was_enabled && !system_bus && HasEnabledDependent(node->id))
     return ErrorCode::BUSY;
+
+  ErrorCode result = EnableClockPathLocked(plan.parent, transaction, 0u, false);
+  if (result != ErrorCode::OK) return result;
+  if (!matches)
+  {
+    if (was_enabled && !system_bus && !transaction.Write(node->gate, 0u))
+      return ErrorCode::CHECK_ERR;
+    if (node->bypass.Exists() && plan.parent_index == 0u)
+    {
+      if (!transaction.Write(node->bypass, 1u)) return ErrorCode::CHECK_ERR;
+    }
+    else
+    {
+      if (!transaction.Write(node->divider0.field, plan.divider) ||
+          !transaction.Write(Tree::Field(node->divider0.field.offset, 3u), 1u) ||
+          !transaction.Write(Tree::Field(node->divider0.field.offset, 0u), 1u))
+        return ErrorCode::CHECK_ERR;
+      const uint32_t selection = plan.parent_index - (node->bypass.Exists() ? 1u : 0u);
+      if (node->source_select.Exists() &&
+          !transaction.Write(node->source_select, selection))
+        return ErrorCode::CHECK_ERR;
+      if (!node->source_select.Exists() && selection != 0u) return ErrorCode::STATE_ERR;
+      if (node->bypass.Exists() && !transaction.Write(node->bypass, 0u))
+        return ErrorCode::CHECK_ERR;
+    }
+    if (was_enabled && !system_bus && !transaction.Write(node->gate, 1u))
+      return ErrorCode::CHECK_ERR;
   }
-  const ErrorCode result = EnableClockPathLocked(clock, 0u);
-  EndWrite();
+  if (ClockRateRecursive(plan.clock, 0u) != plan.actual_rate_hz ||
+      ClockRateRecursive(plan.parent, 0u) != plan.parent_rate_hz)
+    return ErrorCode::CHECK_ERR;
+  RememberPath(plan.clock, transaction, 0u);
+  return ErrorCode::OK;
+}
+
+ErrorCode SG200XRCC::ApplyClockPlan(const ClockRatePlan& plan) noexcept
+{
+  if (!Tree::IsClockPlanWellFormed(plan)) return ErrorCode::ARG_ERR;
+  if (!TryBeginWrite()) return ErrorCode::BUSY;
+  Transaction transaction(*this);
+  const ErrorCode result = ApplyClockPlanLocked(plan, transaction, false);
+  if (result == ErrorCode::OK) transaction.Commit();
   return result;
 }
 
-ErrorCode SG200XRCC::EnableClockPathLocked(ClockId clock, uint8_t depth) noexcept
+ErrorCode SG200XRCC::SetRate(ClockId clock, uint32_t target_rate_hz,
+                             RatePolicy policy) noexcept
 {
-  if (depth >= SG200XClockTree::MAX_CLOCK_DEPTH)
-  {
-    return ErrorCode::STATE_ERR;
-  }
-  const SG200XClockTree::ClockNode* node = SG200XClockTree::Find(clock);
-  if (node == nullptr)
-  {
-    return ErrorCode::ARG_ERR;
-  }
-  const ErrorCode plan_result = ApplyC906LClockPlanLocked(clock, depth);
-  if (plan_result != ErrorCode::OK)
-  {
-    return plan_result;
-  }
-  if (node->ownership == SG200XClockTree::Ownership::RuntimeOnly)
-  {
-    return node->gate.Exists() ? ErrorCode::NOT_SUPPORT : ErrorCode::OK;
-  }
-
-  const uint8_t parent_index = ActiveParentIndex(*node);
-  if (parent_index >= node->parents.count)
-  {
-    return ErrorCode::STATE_ERR;
-  }
-  const ErrorCode result = EnableClockPathLocked(
-      node->parents.ids[parent_index], static_cast<uint8_t>(depth + 1u));
-  if (result != ErrorCode::OK)
-  {
-    return result;
-  }
-  if (!node->gate.Exists())
-  {
-    return ErrorCode::OK;
-  }
-  return SetField(node->gate, true) ? ErrorCode::OK : ErrorCode::CHECK_ERR;
+  if (!TryBeginWrite()) return ErrorCode::BUSY;
+  Transaction transaction(*this);
+  const ClockRatePlan plan = PlanRateLocked(clock, target_rate_hz, policy);
+  const ErrorCode result = plan.IsValid() ? ApplyClockPlanLocked(plan, transaction, false)
+                                          : PlanError(plan.status);
+  if (result == ErrorCode::OK) transaction.Commit();
+  return result;
 }
 
-ErrorCode SG200XRCC::ApplyC906LClockPlanLocked(ClockId clock,
-                                               uint8_t depth) noexcept
+ErrorCode SG200XRCC::SetRate(PeripheralId peripheral, uint32_t target_rate_hz,
+                             RatePolicy policy) noexcept
 {
-  const SG200XClockTree::ClockRatePlan* plan =
-      SG200XClockTree::DEFAULT_C906L_CLOCK_PLAN.Find(clock);
-  if (plan == nullptr)
-  {
-    return ErrorCode::OK;
-  }
-  if (depth >= SG200XClockTree::MAX_CLOCK_DEPTH)
-  {
-    return ErrorCode::STATE_ERR;
-  }
+  const auto* resource = Tree::Find(peripheral);
+  return resource == nullptr ? ErrorCode::ARG_ERR
+                             : SetRate(resource->rate_clock, target_rate_hz, policy);
+}
 
-  const SG200XClockTree::ClockNode* node = SG200XClockTree::Find(clock);
-  if (node == nullptr || node->ownership != SG200XClockTree::Ownership::C906LManaged ||
-      node->kind != SG200XClockTree::NodeKind::MuxDividerGate ||
-      node->path_select.Exists() || !node->divider0.Exists() ||
-      plan->parent_index >= node->parents.count ||
-      node->parents.ids[plan->parent_index] != plan->parent)
-  {
-    return ErrorCode::STATE_ERR;
-  }
+ErrorCode SG200XRCC::InitializeClockLocked(ClockId clock, Transaction& transaction,
+                                           uint8_t depth) noexcept
+{
+  if (depth >= Tree::MAX_CLOCK_DEPTH) return ErrorCode::STATE_ERR;
+  const std::size_t index = Tree::NodeIndex(clock);
+  if (index == Tree::NODES.size()) return ErrorCode::ARG_ERR;
+  if (transaction.configured[index]) return ErrorCode::OK;
+  const auto* plan = Tree::DEFAULT_C906L_CLOCK_PLAN.Find(clock);
+  if (plan == nullptr) return ErrorCode::OK;
+  const ErrorCode result = InitializeClockLocked(plan->parent, transaction, depth + 1u);
+  return result == ErrorCode::OK ? ApplyClockPlanLocked(*plan, transaction, true)
+                                 : result;
+}
 
-  const ErrorCode parent_result =
-      ApplyC906LClockPlanLocked(plan->parent, static_cast<uint8_t>(depth + 1u));
-  if (parent_result != ErrorCode::OK)
+ErrorCode SG200XRCC::EnableClockPathLocked(ClockId clock, Transaction& transaction,
+                                           uint8_t depth, bool defaults) noexcept
+{
+  if (depth >= Tree::MAX_CLOCK_DEPTH) return ErrorCode::STATE_ERR;
+  const auto* node = Tree::Find(clock);
+  if (node == nullptr) return ErrorCode::ARG_ERR;
+  if (defaults)
   {
-    return parent_result;
+    const ErrorCode result = InitializeClockLocked(clock, transaction, depth);
+    if (result != ErrorCode::OK) return result;
   }
-  if (ClockRateRecursive(plan->parent, static_cast<uint8_t>(depth + 1u)) !=
-      plan->parent_rate_hz)
-  {
-    return ErrorCode::STATE_ERR;
-  }
+  if (node->kind == Tree::NodeKind::G2Pll) return ErrorCode::NOT_SUPPORT;
+  if (node->kind == Tree::NodeKind::Fixed || node->kind == Tree::NodeKind::G6Pll)
+    return ClockRateRecursive(clock, 0u) != 0u ? ErrorCode::OK : ErrorCode::STATE_ERR;
+  if (node->ownership == Tree::Ownership::RuntimeOnly)
+    return IsClockEnabledRecursive(clock, 0u) ? ErrorCode::OK : ErrorCode::NOT_SUPPORT;
+  const uint8_t parent = detail::RccParentIndex(*node);
+  if (parent >= node->parents.count) return ErrorCode::STATE_ERR;
+  const ErrorCode result =
+      EnableClockPathLocked(node->parents.ids[parent], transaction, depth + 1u, defaults);
+  if (result != ErrorCode::OK) return result;
+  if (node->divider0.Exists() && !(node->bypass.Exists() && parent == 0u) &&
+      !transaction.Write(Tree::Field(node->divider0.field.offset, 0u), 1u))
+    return ErrorCode::CHECK_ERR;
+  return transaction.Write(node->gate, 1u) ? ErrorCode::OK : ErrorCode::CHECK_ERR;
+}
 
-  // Do not trust software history: remote resets or another owner may have
-  // changed a managed branch since the last call.
-  if (IsPlanRouteActive(*node, *plan) &&
-      ClockRateRecursive(clock, depth) == plan->actual_rate_hz)
-  {
-    return ErrorCode::OK;
-  }
+ErrorCode SG200XRCC::EnableClock(ClockId clock) noexcept
+{
+  if (Tree::Find(clock) == nullptr) return ErrorCode::ARG_ERR;
+  if (!TryBeginWrite()) return ErrorCode::BUSY;
+  Transaction transaction(*this);
+  const ErrorCode result = EnableClockPathLocked(clock, transaction, 0u, true);
+  if (result == ErrorCode::OK) transaction.Commit();
+  return result;
+}
 
-  RegisterSnapshot original;
-  original.Add(node->divider0.field);
-  original.Add(node->bypass);
-  original.Add(node->source_select);
-
-  bool written = WriteField(node->divider0.field, plan->divider);
-  if (written && node->divider0.reset_value != 0u)
-  {
-    auto& divider_register =
-        Register32(CLOCK_GEN_BASE + node->divider0.field.offset);
-    divider_register |= Bit(3u);
-    IoFence();
-    written = (divider_register & Bit(3u)) != 0u;
-  }
-
-  if (written && plan->parent_index == 0u && node->bypass.Exists())
-  {
-    written = SetField(node->bypass, true);
-  }
-  else if (written && plan->parent_index != 0u)
-  {
-    if (node->source_select.Exists())
-    {
-      const uint8_t source_index = static_cast<uint8_t>(
-          plan->parent_index - (node->bypass.Exists() ? 1u : 0u));
-      written = WriteField(node->source_select, source_index);
-    }
-    if (written && node->bypass.Exists())
-    {
-      written = SetField(node->bypass, false);
-    }
-  }
-
-  if (!written || !IsPlanRouteActive(*node, *plan) ||
-      ClockRateRecursive(clock, depth) != plan->actual_rate_hz)
-  {
-    return original.Restore() ? ErrorCode::CHECK_ERR : ErrorCode::FAILED;
-  }
+ErrorCode SG200XRCC::DisableClock(ClockId clock) noexcept
+{
+  const auto* node = Tree::Find(clock);
+  if (node == nullptr) return ErrorCode::ARG_ERR;
+  if (node->ownership != Tree::Ownership::C906LManaged || !node->gate.Exists() ||
+      Tree::IsSystemBusClock(clock))
+    return ErrorCode::NOT_SUPPORT;
+  if (!TryBeginWrite()) return ErrorCode::BUSY;
+  Transaction transaction(*this);
+  if (HasEnabledDependent(clock)) return ErrorCode::BUSY;
+  if (!transaction.Write(node->gate, 0u)) return ErrorCode::CHECK_ERR;
+  RememberPath(clock, transaction, 0u);
+  transaction.Commit();
   return ErrorCode::OK;
+}
+
+bool SG200XRCC::IsClockEnabledRecursive(ClockId clock, uint8_t depth) const noexcept
+{
+  if (depth >= Tree::MAX_CLOCK_DEPTH) return false;
+  const auto* node = Tree::Find(clock);
+  if (node == nullptr || (node->gate.Exists() && detail::RccField(node->gate) == 0u))
+    return false;
+  if (node->kind == Tree::NodeKind::Fixed || node->kind == Tree::NodeKind::G6Pll)
+    return ClockRateRecursive(clock, 0u) != 0u;
+  if (node->kind == Tree::NodeKind::G2Pll) return false;
+  const uint8_t parent = detail::RccParentIndex(*node);
+  if (parent >= node->parents.count) return false;
+  const Tree::Divider& divider =
+      node->path_select.Exists() && detail::RccField(node->path_select) == 0u
+          ? node->divider1
+          : node->divider0;
+  if (divider.Exists() && !(node->bypass.Exists() && parent == 0u) &&
+      !sgll_rcc_div_reset_is_deasserted(divider.field.offset))
+    return false;
+  return IsClockEnabledRecursive(node->parents.ids[parent], depth + 1u);
+}
+
+bool SG200XRCC::IsClockEnabled(ClockId clock) const noexcept
+{
+  const uint32_t before = write_sequence_.load(std::memory_order_acquire);
+  if ((before & 1u) != 0u) return false;
+  const bool enabled = IsClockEnabledRecursive(clock, 0u);
+  sgll_csr_fence_io();
+  return before == write_sequence_.load(std::memory_order_acquire) && enabled;
 }
 
 ErrorCode SG200XRCC::ReleaseReset(ResetId reset) noexcept
 {
-  if (!SG200XClockTree::IsKnownReset(reset))
-  {
-    return ErrorCode::ARG_ERR;
-  }
-  if (!TryBeginWrite())
-  {
-    return ErrorCode::BUSY;
-  }
+  if (!Tree::IsKnownReset(reset)) return ErrorCode::ARG_ERR;
+  if (!TryBeginWrite()) return ErrorCode::BUSY;
+  Transaction transaction(*this);
   const ErrorCode result = ReleaseResetLocked(reset);
-  EndWrite();
+  if (result == ErrorCode::OK) transaction.Commit();
   return result;
-}
-
-ErrorCode SG200XRCC::ReleaseResetLocked(ResetId reset) noexcept
-{
-  uintptr_t address = 0u;
-  uint32_t bit = 0u;
-  if (!ResetAddressAndBit(reset, address, bit))
-  {
-    return ErrorCode::ARG_ERR;
-  }
-  auto& reset_register = Register32(address);
-  reset_register |= bit;
-  IoFence();
-  return (reset_register & bit) != 0u ? ErrorCode::OK : ErrorCode::CHECK_ERR;
-}
-
-ErrorCode SG200XRCC::PulseResetLocked(ResetId reset) noexcept
-{
-  uintptr_t address = 0u;
-  uint32_t bit = 0u;
-  if (!ResetAddressAndBit(reset, address, bit))
-  {
-    return ErrorCode::ARG_ERR;
-  }
-  auto& reset_register = Register32(address);
-
-  reset_register &= ~bit;
-  IoFence();
-  const bool asserted = (reset_register & bit) == 0u;
-
-  // Always attempt to release the peripheral, including after a failed
-  // assertion readback, so an error does not intentionally leave it in reset.
-  reset_register |= bit;
-  IoFence();
-  const bool released = (reset_register & bit) != 0u;
-  return asserted && released ? ErrorCode::OK : ErrorCode::CHECK_ERR;
 }
 
 ErrorCode SG200XRCC::PreparePeripheral(PeripheralId peripheral) noexcept
 {
-  const SG200XClockTree::PeripheralResources* resource =
-      SG200XClockTree::Find(peripheral);
-  if (resource == nullptr)
-  {
-    return ErrorCode::ARG_ERR;
-  }
-
-  if (!TryBeginWrite())
-  {
-    return ErrorCode::BUSY;
-  }
-  ErrorCode result = ErrorCode::OK;
+  const auto* resource = Tree::Find(peripheral);
+  if (resource == nullptr) return ErrorCode::ARG_ERR;
+  if (!TryBeginWrite()) return ErrorCode::BUSY;
+  Transaction transaction(*this);
   for (uint8_t index = 0u; index < resource->clock_count; ++index)
   {
-    result = EnableClockPathLocked(resource->clocks[index], 0u);
-    if (result != ErrorCode::OK)
-    {
-      break;
-    }
+    const ErrorCode result =
+        EnableClockPathLocked(resource->clocks[index], transaction, 0u, true);
+    if (result != ErrorCode::OK) return result;
   }
-  if (result == ErrorCode::OK)
-  {
-    result = ReleaseResetLocked(resource->reset);
-  }
-  EndWrite();
+  const ErrorCode result = ReleaseResetLocked(resource->reset);
+  if (result == ErrorCode::OK) transaction.Commit();
   return result;
 }
 
 ErrorCode SG200XRCC::ResetPeripheral(PeripheralId peripheral) noexcept
 {
-  const SG200XClockTree::PeripheralResources* resource =
-      SG200XClockTree::Find(peripheral);
-  if (resource == nullptr)
-  {
-    return ErrorCode::ARG_ERR;
-  }
-
-  if (!TryBeginWrite())
-  {
-    return ErrorCode::BUSY;
-  }
-  ErrorCode result = ErrorCode::OK;
+  const auto* resource = Tree::Find(peripheral);
+  if (resource == nullptr) return ErrorCode::ARG_ERR;
+  if (!TryBeginWrite()) return ErrorCode::BUSY;
+  Transaction transaction(*this);
   for (uint8_t index = 0u; index < resource->clock_count; ++index)
   {
-    result = EnableClockPathLocked(resource->clocks[index], 0u);
-    if (result != ErrorCode::OK)
-    {
-      break;
-    }
+    const ErrorCode result =
+        EnableClockPathLocked(resource->clocks[index], transaction, 0u, true);
+    if (result != ErrorCode::OK) return result;
   }
-  if (result == ErrorCode::OK)
-  {
-    result = PulseResetLocked(resource->reset);
-  }
-  EndWrite();
+  const ErrorCode result = PulseResetLocked(resource->reset);
+  if (result == ErrorCode::OK) transaction.Commit();
   return result;
 }
 
 uint32_t SG200XRCC::ClockRate(ClockId clock) const noexcept
 {
-  const uint32_t begin = write_sequence_.load(std::memory_order_acquire);
-  if ((begin & 1u) != 0u)
-  {
-    return 0u;
-  }
+  const uint32_t before = write_sequence_.load(std::memory_order_acquire);
+  if ((before & 1u) != 0u) return 0u;
   const uint32_t rate = ClockRateRecursive(clock, 0u);
-  IoFence();
-  const uint32_t end = write_sequence_.load(std::memory_order_acquire);
-  return begin == end && (end & 1u) == 0u ? rate : 0u;
+  sgll_csr_fence_io();
+  return before == write_sequence_.load(std::memory_order_acquire) ? rate : 0u;
+}
+
+uint32_t SG200XRCC::ClockRate(PeripheralId peripheral) const noexcept
+{
+  const auto* resource = Tree::Find(peripheral);
+  return resource == nullptr ? 0u : ClockRate(resource->rate_clock);
+}
+
+ErrorCode SG200XRCC::ReleaseResetLocked(ResetId reset) noexcept
+{
+  const auto target = Tree::DeviceResetTarget(reset);
+  if (target == RESET_NONE) return ErrorCode::ARG_ERR;
+  sgll_rcc_reset_release(target);
+  sgll_csr_fence_io();
+  return sgll_rcc_reset_is_released(target) ? ErrorCode::OK : ErrorCode::CHECK_ERR;
+}
+
+ErrorCode SG200XRCC::PulseResetLocked(ResetId reset) noexcept
+{
+  const auto target = Tree::DeviceResetTarget(reset);
+  if (target == RESET_NONE) return ErrorCode::ARG_ERR;
+  sgll_rcc_reset_assert(target);
+  sgll_csr_fence_io();
+  const bool asserted = !sgll_rcc_reset_is_released(target);
+  sgll_rcc_reset_release(target);
+  sgll_csr_fence_io();
+  return asserted && sgll_rcc_reset_is_released(target) ? ErrorCode::OK
+                                                        : ErrorCode::CHECK_ERR;
 }
 
 uint32_t SG200XRCC::ClockRateRecursive(ClockId clock, uint8_t depth) const noexcept
@@ -505,72 +548,63 @@ uint32_t SG200XRCC::ClockRateRecursive(ClockId clock, uint8_t depth) const noexc
   {
     return 0u;
   }
-
-  const SG200XClockTree::ClockNode* node = SG200XClockTree::Find(clock);
+  const auto* node = SG200XClockTree::Find(clock);
   if (node == nullptr)
   {
     return 0u;
   }
-  if (node->kind == SG200XClockTree::NodeKind::Fixed)
+  using NodeKind = SG200XClockTree::NodeKind;
+  if (node->kind == NodeKind::Fixed)
   {
     return node->id == ClockId::Oscillator ? SG200XClockTree::OSCILLATOR_HZ : 0u;
   }
-  if (node->kind == SG200XClockTree::NodeKind::G6Pll)
+  if (node->kind == NodeKind::G6Pll)
   {
-    return G6PllRate(node->pll_csr);
+    return detail::RccG6PllRate(node->pll_csr);
   }
-  if (node->kind == SG200XClockTree::NodeKind::G2Pll)
+  if (node->kind == NodeKind::G2Pll)
   {
-    // G2 PLLs may run fractional synthesis. Do not manufacture a rate until
-    // their complete SSC/fractional decoder is modelled and board-validated.
     return 0u;
   }
-  if (node->kind == SG200XClockTree::NodeKind::Gate)
+  if (node->kind == NodeKind::Gate)
   {
     return node->parents.count == 1u
-               ? ClockRateRecursive(node->parents.ids[0],
-                                    static_cast<uint8_t>(depth + 1u))
+               ? ClockRateRecursive(node->parents.ids[0], depth + 1u)
                : 0u;
   }
-
-  uint8_t parent_index = 0u;
+  uint8_t parent = 0u;
   const SG200XClockTree::Divider* divider = &node->divider0;
-  if (node->bypass.Exists() && ReadField(node->bypass) != 0u)
+  if (node->bypass.Exists() && detail::RccField(node->bypass) != 0u)
   {
-    parent_index = 0u;
+    parent = 0u;
     divider = nullptr;
+  }
+  else if (node->path_select.Exists() && detail::RccField(node->path_select) == 0u)
+  {
+    parent = 1u;
+    divider = &node->divider1;
   }
   else if (node->path_select.Exists())
   {
-    const bool uses_divider1 = ReadField(node->path_select) == 0u;
-    if (uses_divider1)
-    {
-      parent_index = 1u;
-      divider = &node->divider1;
-    }
-    else
-    {
-      parent_index = static_cast<uint8_t>(2u + ReadField(node->source_select));
-    }
+    parent = static_cast<uint8_t>(2u + detail::RccField(node->source_select));
   }
   else
   {
-    parent_index = node->source_select.Exists()
-                       ? static_cast<uint8_t>(1u + ReadField(node->source_select))
-                       : static_cast<uint8_t>(node->parents.count == 1u ? 0u : 1u);
+    parent = node->source_select.Exists()
+                 ? static_cast<uint8_t>((node->bypass.Exists() ? 1u : 0u) +
+                                        detail::RccField(node->source_select))
+                 : static_cast<uint8_t>(node->parents.count == 1u ? 0u : 1u);
   }
-
-  if (parent_index >= node->parents.count)
+  if (parent >= node->parents.count)
   {
     return 0u;
   }
-  const uint32_t parent_rate = ClockRateRecursive(
-      node->parents.ids[parent_index], static_cast<uint8_t>(depth + 1u));
+  const uint32_t parent_rate = ClockRateRecursive(node->parents.ids[parent], depth + 1u);
   if (parent_rate == 0u || divider == nullptr)
   {
     return parent_rate;
   }
-  const uint32_t divisor = DividerValue(*divider);
+  const uint32_t divisor = detail::RccDividerValue(*divider);
   return divisor == 0u ? 0u : parent_rate / divisor;
 }
 
