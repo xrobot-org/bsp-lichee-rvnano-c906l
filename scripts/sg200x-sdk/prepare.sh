@@ -53,8 +53,16 @@ test -f "$SG200X_BSP_ROOT/driver/sg200x_adc.cpp" || {
   echo "SG200x ADC driver source is missing." >&2
   exit 1
 }
-test -f "$SG200X_BSP_ROOT/driver/sg200x_mmio.hpp" || {
-  echo "SG200x MMIO helper is missing." >&2
+test -f "$SG200X_BSP_ROOT/sgll/inc/sg2002.h" || {
+  echo "SG2002 device header is missing." >&2
+  exit 1
+}
+test -f "$SG200X_BSP_ROOT/driver/sg200x_spi.cpp" || {
+  echo "SG200x SPI driver source is missing." >&2
+  exit 1
+}
+test -f "$SG200X_BSP_ROOT/driver/sg200x_spi.hpp" || {
+  echo "SG200x SPI driver header is missing." >&2
   exit 1
 }
 
@@ -74,7 +82,10 @@ fi
 
 if git -C "$sdk_dir" apply --recount --check "$toolchain_patch_file" >/dev/null 2>&1; then
   git -C "$sdk_dir" apply --recount "$toolchain_patch_file"
-elif ! grep -q 'objcopy${SG200X_TOOL_SUFFIX}' "$sdk_dir/freertos/cvitek/scripts/toolchain-riscv64-elf.cmake"; then
+elif ! grep -Eq 'CMAKE_OBJCOPY.*SG200X_TOOL_SUFFIX' \
+    "$sdk_dir/freertos/cvitek/scripts/toolchain-riscv64-elf.cmake" ||
+    ! grep -Eq 'CMAKE_C_COMPILER.*SG200X_TOOL_SUFFIX' \
+    "$sdk_dir/freertos/cvitek/scripts/toolchain-riscv64-elf.cmake"; then
   echo "SDK toolchain staging patch is missing or incompatible." >&2
   exit 1
 fi

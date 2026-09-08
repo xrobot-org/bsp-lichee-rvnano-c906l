@@ -1,3 +1,7 @@
 [submodule "libxr"]
 	path = libxr
 	url = https://github.com/jiu-xiao/libxr
+
+[submodule "sgll"]
+	path = sgll
+	url = https://github.com/molqzone/sgll.git
