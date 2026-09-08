@@ -1,0 +1,21 @@
+diff --git a/freertos/cvitek/scripts/toolchain-riscv64-elf.cmake b/freertos/cvitek/scripts/toolchain-riscv64-elf.cmake
+--- a/freertos/cvitek/scripts/toolchain-riscv64-elf.cmake
++++ b/freertos/cvitek/scripts/toolchain-riscv64-elf.cmake
+@@ -11,8 +11,8 @@ if(CROSS_COMPILE STREQUAL "")
+ set(CROSS_COMPILE riscv64-unknown-elf-)
+ endif()
+ 
+-set(CMAKE_C_COMPILER ${CROSS_COMPILE}gcc)
+-set(CMAKE_CXX_COMPILER ${CROSS_COMPILE}g++)
+-set(CMAKE_S_COMPILER ${CROSS_COMPILE}gcc)
++set(CMAKE_C_COMPILER "${CROSS_COMPILE}gcc${SG200X_TOOL_SUFFIX}")
++set(CMAKE_CXX_COMPILER "${CROSS_COMPILE}g++${SG200X_TOOL_SUFFIX}")
++set(CMAKE_S_COMPILER "${CROSS_COMPILE}gcc${SG200X_TOOL_SUFFIX}")
+ 
+ message(STATUS "CMAKE_C_COMPILER: ${CMAKE_C_COMPILER}")
+@@ -25,4 +25,4 @@ set(CMAKE_C_COMPILER_WORKS 1)
+ # whole project. Otherwise, this does not get set into the CACHE and therefore
+ # the build doesn't know what the OBJCOPY filepath is
+-set(CMAKE_OBJCOPY ${CROSS_COMPILE}objcopy
++set(CMAKE_OBJCOPY "${CROSS_COMPILE}objcopy${SG200X_TOOL_SUFFIX}"
+ 	    CACHE FILEPATH "The toolchain objcopy command " FORCE )

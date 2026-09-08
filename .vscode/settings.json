@@ -1,0 +1,9 @@
+{
+  "cmake.useCMakePresets": "always",
+  "cmake.configureOnOpen": false,
+  "cmake.configurePreset": "c906",
+  "cmake.buildPreset": "firmware",
+  "clangd.arguments": [
+    "--compile-commands-dir=${workspaceFolder}/build/clangd"
+  ]
+}

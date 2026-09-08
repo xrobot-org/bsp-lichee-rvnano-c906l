@@ -1,0 +1,23 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "c906-base",
+      "hidden": true,
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "SG200X_SDK_DIR": "$env{SG200X_SDK_DIR}",
+        "SG200X_BASH": "$env{SG200X_BASH}",
+        "SG200X_CROSS_COMPILE": "$env{SG200X_CROSS_COMPILE}",
+        "SG200X_TARGET": "$env{SG200X_TARGET}",
+        "SG200X_SSH_PORT": "$env{SG200X_SSH_PORT}"
+      }
+    }
+  ]
+}

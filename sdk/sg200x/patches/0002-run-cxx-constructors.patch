@@ -1,0 +1,47 @@
+diff --git a/freertos/cvitek/arch/riscv64/src/start.S b/freertos/cvitek/arch/riscv64/src/start.S
+--- a/freertos/cvitek/arch/riscv64/src/start.S
++++ b/freertos/cvitek/arch/riscv64/src/start.S
+@@ -127,5 +127,10 @@ _start:
+ 	addi a0, a0, REGSIZE * 8
+ 	bltu a0, a1, 1b
+ 2:
+ 
++	// Initialize the C++ runtime. The C906 firmware is linked with
++	// -nostartfiles, so the vendor start-up must perform this step explicitly.
++	.extern __libc_init_array
++	call __libc_init_array
++
+ 	// argc, argv, envp is 0
+diff --git a/freertos/cvitek/scripts/cv181x_lscript.ld b/freertos/cvitek/scripts/cv181x_lscript.ld
+--- a/freertos/cvitek/scripts/cv181x_lscript.ld
++++ b/freertos/cvitek/scripts/cv181x_lscript.ld
+@@ -118,5 +118,29 @@
+ .got2 : {
+    *(.got2)
+ } > psu_ddr_0_MEM_0
++
++.preinit_array : {
++   . = ALIGN(64);
++   __preinit_array_start = .;
++   KEEP (*(SORT(.preinit_array.*)))
++   KEEP (*(.preinit_array))
++   __preinit_array_end = .;
++} > psu_ddr_0_MEM_0
++
++.init_array : {
++   . = ALIGN(64);
++   __init_array_start = .;
++   KEEP (*(SORT(.init_array.*)))
++   KEEP (*(.init_array))
++   __init_array_end = .;
++} > psu_ddr_0_MEM_0
++
++.fini_array : {
++   . = ALIGN(64);
++   __fini_array_start = .;
++   KEEP (*(SORT(.fini_array.*)))
++   KEEP (*(.fini_array))
++   __fini_array_end = .;
++} > psu_ddr_0_MEM_0
+ 
+ .ctors : {
