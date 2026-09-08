@@ -2,3 +2,13 @@
 /CMakeUserPresets.json
 __pycache__/
 /docs/reference/
+
+# 本地临时文件和调试输出。Local scratch files and debug output.
+/.tmp-*
+/tmp-*
+/.cargo-alt/
+/build-windows-cache/
+/*.log
+/*.err
+/nul
+/scripts/.deploy-lf.sh

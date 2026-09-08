@@ -29,8 +29,6 @@ target_compile_definitions(xr PUBLIC
 )
 
 add_library(xrobot STATIC
-  "${SG200X_BSP_ROOT}/User/main.cpp"
-  "${SG200X_BSP_ROOT}/User/platform.cpp"
   "${SG200X_BSP_ROOT}/driver/sg200x_timebase.cpp"
   "${SG200X_BSP_ROOT}/driver/sg200x_rcc.cpp"
   "${SG200X_BSP_ROOT}/driver/sg200x_gpio.cpp"
@@ -42,6 +40,19 @@ add_library(xrobot STATIC
   "${SG200X_BSP_ROOT}/driver/sg200x_spi.cpp"
 )
 
+# Applications can own their source list without changing the BSP overlay.
+if(EXISTS "${SG200X_BSP_ROOT}/User/CMakeLists.txt")
+  add_subdirectory("${SG200X_BSP_ROOT}/User" "${CMAKE_BINARY_DIR}/xrobot-user")
+else()
+  target_sources(xrobot PRIVATE
+    "${SG200X_BSP_ROOT}/User/main.cpp"
+    "${SG200X_BSP_ROOT}/User/platform.cpp"
+  )
+endif()
+
+add_subdirectory("${SG200X_BSP_ROOT}/sgll" sgll)
+target_include_directories(sgll SYSTEM PUBLIC "${TOP_DIR}/install/include/arch")
+
 target_include_directories(xrobot PRIVATE
   ${_xrobot_sdk_include_dirs}
   "${SG200X_BSP_ROOT}/User"
@@ -52,4 +63,4 @@ target_compile_options(xr PRIVATE -fno-exceptions -fno-rtti)
 target_compile_definitions(xrobot PRIVATE
   THEAD_C906
 )
-target_link_libraries(xrobot PUBLIC xr kernel stdc++)
+target_link_libraries(xrobot PUBLIC xr kernel stdc++ sgll)

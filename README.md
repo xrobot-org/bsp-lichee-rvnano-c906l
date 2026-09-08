@@ -17,6 +17,17 @@ sdk/sg200x/                   SDK pin, patches, overlay, and board config
 `driver/` contains the C906L coprocessor platform drivers directly in this
 repository; no separate driver submodule is required.
 
+The platform drivers depend on the C23 `sgll` submodule. Initialize both
+`libxr` and `sgll` with `git submodule update --init --recursive`. Peripheral
+register definitions and low-level operations belong to SGLL; LibXR adapters
+and clock/resource policy belong to `driver/`.
+
+The SDK overlay accepts an application-owned `User/CMakeLists.txt` that adds
+sources to the existing `xrobot` target. Without that manifest, it builds the
+unchanged `User/main.cpp` and `User/platform.cpp` template entry points. Product
+firmware can maintain its application in a separate checkout while sharing
+these drivers and SDK integration.
+
 ## Vendor SDK
 
 `sdk/sg200x/sdk.env` pins the SG200x SDK revision used by this BSP. The SDK
