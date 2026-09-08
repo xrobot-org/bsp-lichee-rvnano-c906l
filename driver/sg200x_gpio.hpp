@@ -4,6 +4,7 @@
 #include <cstdint>
 
 #include "gpio.hpp"
+#include "sg200x_ll_gpio.h"
 
 namespace LibXR
 {
@@ -31,10 +32,10 @@ class SG200XGPIO final : public GPIO
     D,
   };
 
-  static constexpr uint32_t GPIO0_IRQ = 41u;
-  static constexpr uint32_t GPIO1_IRQ = 42u;
-  static constexpr uint32_t GPIO2_IRQ = 43u;
-  static constexpr uint32_t GPIO3_IRQ = 44u;
+  static constexpr uint32_t GPIO0_IRQ = IRQ_GPIO0;
+  static constexpr uint32_t GPIO1_IRQ = IRQ_GPIO1;
+  static constexpr uint32_t GPIO2_IRQ = IRQ_GPIO2;
+  static constexpr uint32_t GPIO3_IRQ = IRQ_GPIO3;
   static constexpr uint32_t INVALID_PINMUX = UINT32_MAX;
   explicit SG200XGPIO(Bank bank, uint8_t pin);
   ~SG200XGPIO() override;
@@ -63,25 +64,16 @@ class SG200XGPIO final : public GPIO
   static_assert(std::atomic<IrqRegistrationState>::is_always_lock_free,
                 "SG200XGPIO requires lock-free IRQ state atomics");
 
-  static constexpr uint32_t REG_DR = 0x00u;
-  static constexpr uint32_t REG_DDR = 0x04u;
-  static constexpr uint32_t REG_INTEN = 0x30u;
-  static constexpr uint32_t REG_INTMASK = 0x34u;
-  static constexpr uint32_t REG_INTTYPE_LEVEL = 0x38u;
-  static constexpr uint32_t REG_INT_POLARITY = 0x3Cu;
-  static constexpr uint32_t REG_INTSTATUS = 0x40u;
-  static constexpr uint32_t REG_EOI = 0x4Cu;
-  static constexpr uint32_t REG_EXT_PORTA = 0x50u;
-  static constexpr uint8_t CONTROLLER_COUNT = 4u;
-  static constexpr uint8_t PIN_COUNT = 32u;
+  static constexpr uint8_t CONTROLLER_COUNT = GPIO_COUNT;
+  static constexpr uint8_t PIN_COUNT = GPIO_PIN_COUNT;
 
-  static uint8_t ControllerIndex(uintptr_t gpio_base) noexcept;
-  static uintptr_t BankBase(Bank bank) noexcept;
+  static uint8_t ControllerIndex(const GPIO_Type* gpio) noexcept;
+  static GPIO_Type* BankInstance(Bank bank) noexcept;
   static uint32_t PinmuxOffset(Bank bank, uint8_t pin) noexcept;
   static uint32_t DefaultIrq(uint8_t controller) noexcept;
   static int InterruptHandler(int irq, void* argument);
 
-  uintptr_t gpio_base_ = 0u;
+  GPIO_Type* regs_ = nullptr;
   uint8_t pin_ = 0u;
   uint32_t pin_mask_ = 0u;
   uint32_t pinmux_offset_ = INVALID_PINMUX;

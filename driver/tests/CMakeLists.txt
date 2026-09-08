@@ -18,3 +18,28 @@ target_link_libraries(clock_controller_test PRIVATE clock_controller)
 enable_testing()
 add_test(NAME clock_planner COMMAND clock_planner_test)
 add_test(NAME clock_controller COMMAND clock_controller_test)
+
+# Use the actual LibXR interfaces and host synchronization backend. Only CSR
+# cache operations and I2C enable acknowledgment need test hardware hooks.
+set(LIBXR_SYSTEM linux)
+set(LIBXR_DRIVER "")
+set(LIBXR_NO_EIGEN ON)
+add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../libxr" libxr EXCLUDE_FROM_ALL)
+# LibXR's Linux system backend requires its monotonic clock; the Linux USB,
+# networking, and device drivers are unnecessary for these register-image tests.
+target_sources(xr PRIVATE ../../libxr/driver/linux/linux_timebase.cpp)
+target_include_directories(xr PRIVATE ../../libxr/driver/linux)
+add_executable(peripheral_driver_test
+  peripheral_driver_test.cpp
+  ../sg200x_gpio.cpp
+  ../sg200x_pwm.cpp
+  ../sg200x_adc.cpp
+  ../sg200x_watchdog.cpp
+  ../sg200x_i2c.cpp
+  ../sg200x_spi.cpp
+)
+target_compile_options(peripheral_driver_test PRIVATE
+  -include "${CMAKE_CURRENT_SOURCE_DIR}/host_core.hpp")
+target_link_options(peripheral_driver_test PRIVATE -Wl,--wrap=sgll_i2c_enable_wait)
+target_link_libraries(peripheral_driver_test PRIVATE clock_controller xr)
+add_test(NAME peripheral_drivers COMMAND peripheral_driver_test)

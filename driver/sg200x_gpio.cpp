@@ -1,6 +1,7 @@
 #include "sg200x_gpio.hpp"
 
-#include "sg200x_mmio.hpp"
+#include "sg200x_ll_csr.h"
+#include "sg200x_ll_pinmux.h"
 
 // The Vendor SDK exports this Linux-style IRQ registration symbol from its
 // C906 interrupt support. Keep the declaration at global scope so the weak
@@ -13,64 +14,44 @@ namespace LibXR
 {
 namespace
 {
-constexpr uintptr_t GPIO0_BASE = 0x03020000u;
-constexpr uintptr_t GPIO1_BASE = 0x03021000u;
-constexpr uintptr_t GPIO2_BASE = 0x03022000u;
-constexpr uintptr_t GPIO3_BASE = 0x03023000u;
-constexpr uintptr_t GPIO_CONTROLLER_STRIDE = 0x1000u;
-constexpr uintptr_t PINMUX_BASE = 0x03001000u;
-
-void IoFence() noexcept { asm volatile("fence iorw, iorw" ::: "memory"); }
-
 void ConfigurePinmux(uint32_t offset)
 {
-  if (offset == SG200XGPIO::INVALID_PINMUX)
+  switch (offset)
   {
-    return;
+    case PINMUX_SD0_PWR_EN_OFFSET:
+      (void)sgll_pinmux_function_set(offset, PINMUX_SD0_PWR_EN_GPIOA14_FUNCTION);
+      break;
+    case PINMUX_EMMC_CLK_OFFSET:
+      (void)sgll_pinmux_function_set(offset, PINMUX_EMMC_CLK_GPIOA22_FUNCTION);
+      break;
+    case PINMUX_EMMC_CMD_OFFSET:
+      (void)sgll_pinmux_function_set(offset, PINMUX_EMMC_CMD_GPIOA23_FUNCTION);
+      break;
+    case PINMUX_EMMC_DAT1_OFFSET:
+      (void)sgll_pinmux_function_set(offset, PINMUX_EMMC_DAT1_GPIOA24_FUNCTION);
+      break;
+    case PINMUX_EMMC_DAT0_OFFSET:
+      (void)sgll_pinmux_function_set(offset, PINMUX_EMMC_DAT0_GPIOA25_FUNCTION);
+      break;
+    default:
+      break;
   }
-
-  auto& reg = Register32(PINMUX_BASE, offset);
-  reg = (reg & ~0x7u) | 3u;
 }
 
 }  // namespace
 
-std::atomic<SG200XGPIO*>
-    SG200XGPIO::instances_[CONTROLLER_COUNT][PIN_COUNT]{};
+std::atomic<SG200XGPIO*> SG200XGPIO::instances_[CONTROLLER_COUNT][PIN_COUNT]{};
 std::atomic<SG200XGPIO::IrqRegistrationState>
     SG200XGPIO::irq_registration_[CONTROLLER_COUNT]{};
 
-uint8_t SG200XGPIO::ControllerIndex(uintptr_t gpio_base) noexcept
+uint8_t SG200XGPIO::ControllerIndex(const GPIO_Type* gpio) noexcept
 {
-  switch (gpio_base)
-  {
-    case GPIO0_BASE:
-      return 0u;
-    case GPIO1_BASE:
-      return 1u;
-    case GPIO2_BASE:
-      return 2u;
-    case GPIO3_BASE:
-      return 3u;
-    default:
-      return CONTROLLER_COUNT;
-  }
+  return static_cast<uint8_t>(sgll_gpio_index_get(gpio));
 }
 
-uintptr_t SG200XGPIO::BankBase(Bank bank) noexcept
+GPIO_Type* SG200XGPIO::BankInstance(Bank bank) noexcept
 {
-  switch (bank)
-  {
-    case Bank::A:
-      return GPIO0_BASE;
-    case Bank::B:
-      return GPIO1_BASE;
-    case Bank::C:
-      return GPIO2_BASE;
-    case Bank::D:
-      return GPIO3_BASE;
-  }
-  return 0u;
+  return sgll_gpio_get(static_cast<uint32_t>(bank));
 }
 
 uint32_t SG200XGPIO::PinmuxOffset(Bank bank, uint8_t pin) noexcept
@@ -78,7 +59,7 @@ uint32_t SG200XGPIO::PinmuxOffset(Bank bank, uint8_t pin) noexcept
   // SD0_PWR_EN is the SoC pad carrying GPIOA_14 on SG200x.
   if (bank == Bank::A && pin == 14u)
   {
-    return 0x38u;
+    return PINMUX_SD0_PWR_EN_OFFSET;
   }
   // LicheeRV Nano labels these EMMC pads as software SPI4.
   if (bank == Bank::A)
@@ -86,13 +67,13 @@ uint32_t SG200XGPIO::PinmuxOffset(Bank bank, uint8_t pin) noexcept
     switch (pin)
     {
       case 22u:  // EMMC_CLK / SPI4_SCK
-        return 0x50u;
+        return PINMUX_EMMC_CLK_OFFSET;
       case 23u:  // EMMC_CMD / SPI4_MISO
-        return 0x5Cu;
+        return PINMUX_EMMC_CMD_OFFSET;
       case 24u:  // EMMC_DAT1 / SPI4_CS
-        return 0x60u;
+        return PINMUX_EMMC_DAT1_OFFSET;
       case 25u:  // EMMC_DAT0 / SPI4_MOSI
-        return 0x54u;
+        return PINMUX_EMMC_DAT0_OFFSET;
       default:
         break;
     }
@@ -105,13 +86,12 @@ uint32_t SG200XGPIO::DefaultIrq(uint8_t controller) noexcept
   return GPIO0_IRQ + controller;
 }
 
-SG200XGPIO::SG200XGPIO(Bank bank, uint8_t pin)
-    : gpio_base_(BankBase(bank)), pin_(pin)
+SG200XGPIO::SG200XGPIO(Bank bank, uint8_t pin) : regs_(BankInstance(bank)), pin_(pin)
 {
-  const uint8_t controller = ControllerIndex(gpio_base_);
+  const uint8_t controller = ControllerIndex(regs_);
   if (controller >= CONTROLLER_COUNT || pin_ >= PIN_COUNT)
   {
-    gpio_base_ = 0u;
+    regs_ = nullptr;
     return;
   }
 
@@ -122,7 +102,7 @@ SG200XGPIO::SG200XGPIO(Bank bank, uint8_t pin)
   if (!instances_[controller][pin_].compare_exchange_strong(
           expected, this, std::memory_order_acq_rel, std::memory_order_acquire))
   {
-    gpio_base_ = 0u;
+    regs_ = nullptr;
     pin_mask_ = 0u;
     return;
   }
@@ -130,65 +110,58 @@ SG200XGPIO::SG200XGPIO(Bank bank, uint8_t pin)
 
 SG200XGPIO::~SG200XGPIO()
 {
-  const uint8_t controller = ControllerIndex(gpio_base_);
+  const uint8_t controller = ControllerIndex(regs_);
   if (controller >= CONTROLLER_COUNT || pin_ >= PIN_COUNT)
   {
     return;
   }
 
   interrupt_enabled_.store(false, std::memory_order_release);
-  IoFence();
-  Register32(gpio_base_, REG_INTEN) &= ~pin_mask_;
-  Register32(gpio_base_, REG_INTMASK) |= pin_mask_;
-  Register32(gpio_base_, REG_EOI) = pin_mask_;
-  IoFence();
+  sgll_csr_fence_io();
+  sgll_gpio_interrupt_enable(regs_, pin_mask_, false);
+  sgll_gpio_interrupt_mask(regs_, pin_mask_, true);
+  sgll_gpio_interrupt_clear(regs_, pin_mask_);
+  sgll_csr_fence_io();
   SG200XGPIO* expected = this;
   (void)instances_[controller][pin_].compare_exchange_strong(
       expected, nullptr, std::memory_order_acq_rel, std::memory_order_acquire);
-  gpio_base_ = 0u;
+  regs_ = nullptr;
 }
 
 bool SG200XGPIO::Read()
 {
-  return gpio_base_ != 0u && (Register32(gpio_base_, REG_EXT_PORTA) & pin_mask_) != 0u;
+  return regs_ != nullptr && (sgll_gpio_input_get(regs_) & pin_mask_) != 0u;
 }
 
 void SG200XGPIO::Write(bool value)
 {
-  if (gpio_base_ == 0u)
-  {
-    return;
-  }
-
+  if (regs_ == nullptr) return;
   ConfigurePinmux(pinmux_offset_);
-
-  auto& data = Register32(gpio_base_, REG_DR);
   if (direction_ == Direction::OUTPUT_OPEN_DRAIN && value)
   {
-    // An open-drain high level is released by switching the pin to input.
-    Register32(gpio_base_, REG_DDR) &= ~pin_mask_;
-    data |= pin_mask_;
+    // Release the output before changing its latch to high.
+    sgll_gpio_output_enable(regs_, pin_mask_, false);
+    sgll_csr_fence_io();
+    sgll_gpio_output_write(regs_, pin_mask_, true);
     return;
   }
   if (direction_ == Direction::OUTPUT_OPEN_DRAIN)
   {
-    // Never enable the push-pull output while its latch still contains high.
-    data &= ~pin_mask_;
-    IoFence();
-    Register32(gpio_base_, REG_DDR) |= pin_mask_;
+    sgll_gpio_output_write(regs_, pin_mask_, false);
+    sgll_csr_fence_io();
+    sgll_gpio_output_enable(regs_, pin_mask_, true);
     return;
   }
   if (direction_ == Direction::OUTPUT_PUSH_PULL)
   {
-    Register32(gpio_base_, REG_DDR) |= pin_mask_;
+    sgll_gpio_output_enable(regs_, pin_mask_, true);
   }
-
-  data = (data & ~pin_mask_) | (value ? pin_mask_ : 0u);
+  sgll_gpio_output_write(regs_, pin_mask_, value);
 }
 
 ErrorCode SG200XGPIO::SetConfig(Configuration config)
 {
-  if (gpio_base_ == 0u)
+  if (regs_ == nullptr)
   {
     return ErrorCode::ARG_ERR;
   }
@@ -203,7 +176,7 @@ ErrorCode SG200XGPIO::SetConfig(Configuration config)
     return ErrorCode::NOT_SUPPORT;
   }
 
-  const uint8_t controller = ControllerIndex(gpio_base_);
+  const uint8_t controller = ControllerIndex(regs_);
   if (controller >= CONTROLLER_COUNT)
   {
     return ErrorCode::ARG_ERR;
@@ -213,36 +186,36 @@ ErrorCode SG200XGPIO::SetConfig(Configuration config)
 
   direction_ = config.direction;
   interrupt_enabled_.store(false, std::memory_order_release);
-  IoFence();
-  Register32(gpio_base_, REG_INTEN) &= ~pin_mask_;
-  Register32(gpio_base_, REG_INTMASK) |= pin_mask_;
-  Register32(gpio_base_, REG_EOI) = pin_mask_;
+  sgll_csr_fence_io();
+  sgll_gpio_interrupt_enable(regs_, pin_mask_, false);
+  sgll_gpio_interrupt_mask(regs_, pin_mask_, true);
+  sgll_gpio_interrupt_clear(regs_, pin_mask_);
 
   switch (config.direction)
   {
     case Direction::INPUT:
-      Register32(gpio_base_, REG_DDR) &= ~pin_mask_;
-      Register32(gpio_base_, REG_INTTYPE_LEVEL) &= ~pin_mask_;
+      sgll_gpio_output_enable(regs_, pin_mask_, false);
+      sgll_gpio_interrupt_edge_set(regs_, pin_mask_, false);
       break;
     case Direction::OUTPUT_PUSH_PULL:
-      Register32(gpio_base_, REG_DDR) |= pin_mask_;
-      Register32(gpio_base_, REG_INTTYPE_LEVEL) &= ~pin_mask_;
+      sgll_gpio_output_enable(regs_, pin_mask_, true);
+      sgll_gpio_interrupt_edge_set(regs_, pin_mask_, false);
       break;
     case Direction::OUTPUT_OPEN_DRAIN:
-      Register32(gpio_base_, REG_DR) &= ~pin_mask_;
-      IoFence();
-      Register32(gpio_base_, REG_DDR) |= pin_mask_;
-      Register32(gpio_base_, REG_INTTYPE_LEVEL) &= ~pin_mask_;
+      sgll_gpio_output_write(regs_, pin_mask_, false);
+      sgll_csr_fence_io();
+      sgll_gpio_output_enable(regs_, pin_mask_, true);
+      sgll_gpio_interrupt_edge_set(regs_, pin_mask_, false);
       break;
     case Direction::RISING_INTERRUPT:
-      Register32(gpio_base_, REG_DDR) &= ~pin_mask_;
-      Register32(gpio_base_, REG_INTTYPE_LEVEL) |= pin_mask_;
-      Register32(gpio_base_, REG_INT_POLARITY) |= pin_mask_;
+      sgll_gpio_output_enable(regs_, pin_mask_, false);
+      sgll_gpio_interrupt_edge_set(regs_, pin_mask_, true);
+      sgll_gpio_interrupt_polarity_set(regs_, pin_mask_, true);
       break;
     case Direction::FALL_INTERRUPT:
-      Register32(gpio_base_, REG_DDR) &= ~pin_mask_;
-      Register32(gpio_base_, REG_INTTYPE_LEVEL) |= pin_mask_;
-      Register32(gpio_base_, REG_INT_POLARITY) &= ~pin_mask_;
+      sgll_gpio_output_enable(regs_, pin_mask_, false);
+      sgll_gpio_interrupt_edge_set(regs_, pin_mask_, true);
+      sgll_gpio_interrupt_polarity_set(regs_, pin_mask_, false);
       break;
     case Direction::FALL_RISING_INTERRUPT:
       return ErrorCode::NOT_SUPPORT;
@@ -253,7 +226,7 @@ ErrorCode SG200XGPIO::SetConfig(Configuration config)
 
 ErrorCode SG200XGPIO::EnableInterrupt()
 {
-  if (gpio_base_ == 0u)
+  if (regs_ == nullptr)
   {
     return ErrorCode::ARG_ERR;
   }
@@ -263,7 +236,7 @@ ErrorCode SG200XGPIO::EnableInterrupt()
     return ErrorCode::STATE_ERR;
   }
 
-  const uint8_t controller = ControllerIndex(gpio_base_);
+  const uint8_t controller = ControllerIndex(regs_);
   if (controller >= CONTROLLER_COUNT)
   {
     return ErrorCode::ARG_ERR;
@@ -274,21 +247,20 @@ ErrorCode SG200XGPIO::EnableInterrupt()
   {
     IrqRegistrationState expected = IrqRegistrationState::UNREGISTERED;
     if (!irq_registration_[controller].compare_exchange_strong(
-            expected, IrqRegistrationState::INITIALIZING,
-            std::memory_order_acq_rel, std::memory_order_acquire))
+            expected, IrqRegistrationState::INITIALIZING, std::memory_order_acq_rel,
+            std::memory_order_acquire))
     {
       return ErrorCode::BUSY;
     }
     if (request_irq == nullptr ||
-        request_irq(irq_, &SG200XGPIO::InterruptHandler, 0u, "sg200x-gpio",
-                    nullptr) != 0)
+        request_irq(irq_, &SG200XGPIO::InterruptHandler, 0u, "sg200x-gpio", nullptr) != 0)
     {
       irq_registration_[controller].store(IrqRegistrationState::UNREGISTERED,
-                                           std::memory_order_release);
+                                          std::memory_order_release);
       return ErrorCode::NOT_SUPPORT;
     }
     irq_registration_[controller].store(IrqRegistrationState::READY,
-                                         std::memory_order_release);
+                                        std::memory_order_release);
   }
   else if (registration != IrqRegistrationState::READY)
   {
@@ -296,50 +268,51 @@ ErrorCode SG200XGPIO::EnableInterrupt()
   }
 
   interrupt_enabled_.store(true, std::memory_order_release);
-  IoFence();
-  Register32(gpio_base_, REG_EOI) = pin_mask_;
-  Register32(gpio_base_, REG_INTMASK) &= ~pin_mask_;
-  Register32(gpio_base_, REG_INTEN) |= pin_mask_;
-  IoFence();
+  sgll_csr_fence_io();
+  sgll_gpio_interrupt_clear(regs_, pin_mask_);
+  sgll_gpio_interrupt_mask(regs_, pin_mask_, false);
+  sgll_gpio_interrupt_enable(regs_, pin_mask_, true);
+  sgll_csr_fence_io();
   return ErrorCode::OK;
 }
 
 ErrorCode SG200XGPIO::DisableInterrupt()
 {
-  if (gpio_base_ == 0u)
+  if (regs_ == nullptr)
   {
     return ErrorCode::ARG_ERR;
   }
 
   interrupt_enabled_.store(false, std::memory_order_release);
-  IoFence();
-  Register32(gpio_base_, REG_INTEN) &= ~pin_mask_;
-  Register32(gpio_base_, REG_INTMASK) |= pin_mask_;
-  Register32(gpio_base_, REG_EOI) = pin_mask_;
-  IoFence();
+  sgll_csr_fence_io();
+  sgll_gpio_interrupt_enable(regs_, pin_mask_, false);
+  sgll_gpio_interrupt_mask(regs_, pin_mask_, true);
+  sgll_gpio_interrupt_clear(regs_, pin_mask_);
+  sgll_csr_fence_io();
   return ErrorCode::OK;
 }
 
 void SG200XGPIO::CheckInterrupt(uintptr_t gpio_base)
 {
-  const uint8_t controller = ControllerIndex(gpio_base);
+  const uint8_t controller =
+      ControllerIndex(reinterpret_cast<const GPIO_Type*>(gpio_base));
   if (controller >= CONTROLLER_COUNT)
   {
     return;
   }
 
-  const uint32_t pending = Register32(gpio_base, REG_INTSTATUS);
+  GPIO_Type* const gpio = sgll_gpio_get(controller);
+  const uint32_t pending = sgll_gpio_interrupt_status_get(gpio);
   if (pending != 0u)
   {
-    Register32(gpio_base, REG_EOI) = pending;
+    sgll_gpio_interrupt_clear(gpio, pending);
   }
 
   for (uint8_t pin = 0u; pin < PIN_COUNT; ++pin)
   {
     SG200XGPIO* const instance =
         instances_[controller][pin].load(std::memory_order_acquire);
-    if ((pending & (static_cast<uint32_t>(1u) << pin)) != 0u &&
-        instance != nullptr &&
+    if ((pending & (static_cast<uint32_t>(1u) << pin)) != 0u && instance != nullptr &&
         instance->interrupt_enabled_.load(std::memory_order_acquire))
     {
       instance->callback_.Run(true);
@@ -355,8 +328,7 @@ int SG200XGPIO::InterruptHandler(int irq, void*)
     return 0;
   }
   const auto controller = static_cast<uint8_t>(irq - static_cast<int>(GPIO0_IRQ));
-  CheckInterrupt(GPIO0_BASE + static_cast<uintptr_t>(controller) *
-                                   GPIO_CONTROLLER_STRIDE);
+  CheckInterrupt(reinterpret_cast<uintptr_t>(sgll_gpio_get(controller)));
   return 0;
 }
 
