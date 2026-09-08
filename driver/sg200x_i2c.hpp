@@ -5,6 +5,7 @@
 
 #include "i2c.hpp"
 #include "sg200x_dma.hpp"
+#include "sg200x_ll_i2c.h"
 #include "sg200x_rcc.hpp"
 
 namespace LibXR
@@ -26,11 +27,15 @@ class SG200XI2C final : public I2C
                 "SG200XI2C requires lock-free boolean atomics");
 
   using Controller = SG200XRCC::I2cController;
-  static constexpr uintptr_t I2C0_BASE = 0x04000000u;
+
+  struct DmaChannels
+  {
+    uint8_t tx = 6u;
+    uint8_t rx = 7u;
+  };
 
   SG200XI2C(Controller controller, RawData tx_command_buffer, RawData rx_buffer,
-            Configuration config = {100000u});
-  ~SG200XI2C();
+            Configuration config = {100000u}, DmaChannels dma_channels = {6u, 7u});
 
   ErrorCode Read(uint16_t slave_addr, RawData read_data, ReadOperation& op,
                  bool in_isr = false) override;
@@ -48,30 +53,13 @@ class SG200XI2C final : public I2C
 
   [[nodiscard]] bool IsValid() const noexcept
   {
-    return base_ != 0u && !faulted_.load(std::memory_order_acquire);
+    return regs_ != nullptr && !faulted_.load(std::memory_order_acquire);
   }
 
  private:
-  static constexpr uint8_t CONTROLLER_COUNT = 5u;
-  static constexpr uintptr_t STRIDE = 0x10000u;
-  // C906L's SDK interrupt map assigns I2C0..I2C4 to 32..36. The Linux RISC-V
-  // device tree's 49..53 values belong to the main-core PLIC namespace.
-  static constexpr uint32_t IRQ0 = 32u;
-  static constexpr uint32_t REG_CON = 0x00u, REG_TAR = 0x04u, REG_DATA_CMD = 0x10u;
-  static constexpr uint32_t REG_SS_H = 0x14u, REG_SS_L = 0x18u, REG_FS_H = 0x1Cu,
-                            REG_FS_L = 0x20u;
-  static constexpr uint32_t REG_INTR_MASK = 0x30u, REG_RAW = 0x34u, REG_CLR_INTR = 0x40u;
-  static constexpr uint32_t REG_CLR_ABRT = 0x54u, REG_CLR_STOP = 0x60u,
-                            REG_ENABLE = 0x6Cu;
-  static constexpr uint32_t REG_ENABLE_STATUS = 0x9Cu, REG_DMA_CR = 0x88u,
-                            REG_DMA_TDLR = 0x8Cu;
-  static constexpr uint32_t REG_DMA_RDLR = 0x90u, REG_SDA_HOLD = 0x7Cu,
-                            REG_SDA_SETUP = 0x94u, REG_SPKLEN = 0xA0u;
-  static constexpr uint32_t CON_MASTER = 1u, CON_SS = 2u, CON_FS = 4u, CON_10B = 16u,
-                            CON_RESTART = 32u, CON_SLAVE_DISABLE = 64u;
-  static constexpr uint32_t TAR_10B = 1u << 12u;
-  static constexpr uint16_t CMD_READ = 0x100u, CMD_STOP = 0x200u, CMD_RESTART = 0x400u;
-  static constexpr uint32_t INTR_ABRT = 0x40u, INTR_STOP = 0x200u;
+  static constexpr uint8_t CONTROLLER_COUNT = I2C_COUNT;
+  static constexpr uint32_t IRQ0 = IRQ_I2C0;
+  static constexpr uint32_t ENABLE_WAIT_ATTEMPTS = 100000u;
   ErrorCode Enable(bool enabled) const;
   ErrorCode Start(uint16_t slave, const uint8_t* prefix, size_t prefix_size,
                   const uint8_t* write, size_t write_size, RawData read,
@@ -82,7 +70,7 @@ class SG200XI2C final : public I2C
   static void DmaRx(void* context, ErrorCode result, bool in_isr);
   static int Interrupt(int irq, void* context);
 
-  uintptr_t base_ = 0u;
+  I2C_Type* regs_ = nullptr;
   uint8_t controller_index_ = 0xFFu;
   uint32_t input_clock_hz_ = 0u;
   RawData tx_stage_{};
@@ -90,8 +78,10 @@ class SG200XI2C final : public I2C
   std::atomic<bool> active_{false};
   std::atomic<bool> finishing_{false};
   std::atomic<bool> faulted_{false};
+  DmaChannels dma_channels_{};
   uint8_t tx_channel_ = 0xFFu, rx_channel_ = 0xFFu;
   bool tx_done_ = false, rx_done_ = false, stop_done_ = false;
+  size_t dma_rx_bytes_ = 0u;
   RawData read_target_{};
   Operation<ErrorCode> operation_{};
   AsyncBlockWait block_wait_{};

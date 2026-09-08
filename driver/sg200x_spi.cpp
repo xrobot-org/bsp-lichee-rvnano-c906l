@@ -1,28 +1,75 @@
 #include "sg200x_spi.hpp"
 
-#include "sg200x_mmio.hpp"
+#include "sg200x_ll_csr.h"
+#include "sg200x_ll_dmamux.h"
+#include "sg200x_ll_gpio.h"
+
+extern "C" int request_irq(unsigned int irqn, int (*handler)(int, void*),
+                           unsigned long flags, const char* name, void* argument)
+    __attribute__((weak));
 
 namespace LibXR
 {
+namespace
+{
+#ifdef SPI2_HARDWARE_CS
+constexpr bool SPI2_MANUAL_CS = false;
+#else
+constexpr bool SPI2_MANUAL_CS = true;
+#endif
+
+inline void ManualCsDelay() noexcept
+{
+  // SD1 pads live in the always-on power domain while SPI2 is clocked from
+  // the main domain. Allow the synchronized CS level to settle before the
+  // first clock and preserve a matching hold interval after the last clock.
+  sgll_csr_delay_nops(1024u);
+}
+
+void ManualSpi2Cs(bool active) noexcept
+{
+  // The SD1 CS pad belongs to the always-on GPIO domain.
+  sgll_gpio_output_enable(RTC_GPIO_REGS, PINMUX_SD1_D3_GPIO_MASK, true);
+  sgll_gpio_output_write(RTC_GPIO_REGS, PINMUX_SD1_D3_GPIO_MASK, !active);
+  sgll_csr_fence_io();
+  ManualCsDelay();
+}
+
+bool IsC906LChannel(uint8_t channel) noexcept
+{
+  return channel < DMA_CHANNEL_COUNT &&
+         (SG200XDMAC::OWNED_CHANNEL_MASK & SGLL_BIT(channel)) != 0u;
+}
+}  // namespace
 
 SG200XSPI::SG200XSPI(Controller controller, uint8_t chip_select, RawData rx_buffer,
-                     RawData tx_buffer, Configuration config)
-    : SPI(rx_buffer, tx_buffer)
+                     RawData tx_buffer, Configuration config, DmaChannels dma_channels)
+    : SPI(rx_buffer, tx_buffer), dma_channels_(dma_channels)
 {
   const uint8_t index = static_cast<uint8_t>(controller);
-  if (index >= CONTROLLER_COUNT || chip_select >= 32u || rx_buffer.addr_ == nullptr ||
-      tx_buffer.addr_ == nullptr || rx_buffer.size_ == 0u || tx_buffer.size_ == 0u ||
-      (reinterpret_cast<uintptr_t>(rx_buffer.addr_) % HW_CACHE_LINE_SIZE) != 0u ||
-      (reinterpret_cast<uintptr_t>(tx_buffer.addr_) % HW_CACHE_LINE_SIZE) != 0u ||
-      (rx_buffer.size_ % HW_CACHE_LINE_SIZE) != 0u ||
-      (tx_buffer.size_ % HW_CACHE_LINE_SIZE) != 0u)
+  if (index >= SPI_COUNT || chip_select >= SPI_CHIP_SELECT_COUNT ||
+      rx_buffer.addr_ == nullptr || tx_buffer.addr_ == nullptr || rx_buffer.size_ == 0u ||
+      tx_buffer.size_ == 0u ||
+      (reinterpret_cast<uintptr_t>(rx_buffer.addr_) % SGLL_DCACHE_LINE_SIZE) != 0u ||
+      (reinterpret_cast<uintptr_t>(tx_buffer.addr_) % SGLL_DCACHE_LINE_SIZE) != 0u ||
+      (rx_buffer.size_ % SGLL_DCACHE_LINE_SIZE) != 0u ||
+      (tx_buffer.size_ % SGLL_DCACHE_LINE_SIZE) != 0u)
   {
     return;
   }
   const auto peripheral = static_cast<SG200XRCC::PeripheralId>(
       static_cast<uint8_t>(SG200XRCC::PeripheralId::Spi0) + index);
   SG200XRCC& rcc = SG200XRCC::Instance();
-  if (rcc.PreparePeripheral(peripheral) != ErrorCode::OK)
+  // The SSI can retain FIFO and serializer state across a C906 remoteproc
+  // restart. Pulse its dedicated reset after enabling the clock path so a
+  // previous Linux/U-Boot owner cannot leave the external SDO path latched in
+  // an indeterminate state.
+  if (rcc.ResetPeripheral(peripheral) != ErrorCode::OK)
+  {
+    return;
+  }
+  if (!IsC906LChannel(dma_channels.rx) || !IsC906LChannel(dma_channels.tx) ||
+      dma_channels.rx == dma_channels.tx)
   {
     return;
   }
@@ -31,16 +78,25 @@ SG200XSPI::SG200XSPI(Controller controller, uint8_t chip_select, RawData rx_buff
   {
     return;
   }
-  base_ = SPI0_BASE + static_cast<uintptr_t>(index) * CONTROLLER_STRIDE;
-  chip_select_mask_ = static_cast<uint32_t>(1u) << chip_select;
+  regs_ = sgll_spi_get(index);
+  if (regs_ == nullptr)
+  {
+    return;
+  }
+  controller_index_ = index;
+  chip_select_mask_ = SPI_SER_CS0_BIT;
   if (config.prescaler == Prescaler::UNKNOWN)
   {
     config.prescaler = Prescaler::DIV_2;
   }
   if (SetConfig(config) != ErrorCode::OK)
   {
-    base_ = 0u;
+    regs_ = nullptr;
+    return;
   }
+  // All DMA clients share one dispatcher: the SDK request_irq() replaces the
+  // existing handler even with IRQF_SHARED. Registering a per-SPI handler
+  // would lose I2C/UART completions on the same SDMA interrupt.
 }
 
 bool SG200XSPI::TryLock() noexcept
@@ -52,16 +108,16 @@ void SG200XSPI::Unlock() noexcept { busy_.clear(std::memory_order_release); }
 
 ErrorCode SG200XSPI::Disable() const
 {
-  Register32(base_, REG_SER) = 0u;
-  Register32(base_, REG_SPIENR) = 0u;
+  sgll_spi_slave_select_disable(regs_);
+  sgll_spi_disable(regs_);
   return ErrorCode::OK;
 }
 
 ErrorCode SG200XSPI::CheckError() const
 {
-  if ((Register32(base_, REG_RISR) & RISR_ERROR_MASK) != 0u)
+  if ((sgll_spi_raw_interrupt_status_get(regs_) & SPI_RISR_ERROR_MASK) != 0u)
   {
-    const uint32_t clear = Register32(base_, REG_ICR);
+    const uint32_t clear = sgll_spi_interrupt_clear(regs_);
     (void)clear;
     return ErrorCode::FAILED;
   }
@@ -70,14 +126,8 @@ ErrorCode SG200XSPI::CheckError() const
 
 ErrorCode SG200XSPI::WaitForIdle() const
 {
-  for (uint32_t attempt = 0u; attempt < IDLE_WAIT_ATTEMPTS; ++attempt)
-  {
-    if ((Register32(base_, REG_SR) & SR_BUSY) == 0u)
-    {
-      return ErrorCode::OK;
-    }
-  }
-  return ErrorCode::TIMEOUT;
+  return sgll_spi_wait_idle(regs_, IDLE_WAIT_ATTEMPTS) ? ErrorCode::OK
+                                                       : ErrorCode::TIMEOUT;
 }
 
 ErrorCode SG200XSPI::SetConfig(Configuration config)
@@ -89,7 +139,8 @@ ErrorCode SG200XSPI::SetConfig(Configuration config)
   if (config.prescaler == Prescaler::UNKNOWN ||
       (config.clock_polarity != ClockPolarity::LOW &&
        config.clock_polarity != ClockPolarity::HIGH) ||
-      (config.clock_phase != ClockPhase::EDGE_1 && config.clock_phase != ClockPhase::EDGE_2))
+      (config.clock_phase != ClockPhase::EDGE_1 &&
+       config.clock_phase != ClockPhase::EDGE_2))
   {
     return ErrorCode::ARG_ERR;
   }
@@ -108,7 +159,7 @@ ErrorCode SG200XSPI::SetConfig(Configuration config)
   // LibXR's maximum rate is the SSI's real maximum (ssi_clk / 2).  Each
   // LibXR prescaler therefore maps to twice its numeric hardware divider.
   const uint64_t divider64 = static_cast<uint64_t>(requested_divider) * 2u;
-  if (divider64 > 65534u)
+  if (divider64 > SPI_BAUDR_MAX)
   {
     Unlock();
     return ErrorCode::NOT_SUPPORT;
@@ -116,27 +167,28 @@ ErrorCode SG200XSPI::SetConfig(Configuration config)
   const uint32_t divider = static_cast<uint32_t>(divider64);
 
   (void)Disable();
-  uint32_t ctrlr0 = CTRLR0_TMOD_TXRX | CTRLR0_MOTOROLA | CTRLR0_DFS_8BIT;
-#ifdef SG200X_SPI_INTERNAL_LOOPBACK
+  const sgll_spi_mode_t spi_mode =
+      config.clock_polarity == ClockPolarity::HIGH
+          ? (config.clock_phase == ClockPhase::EDGE_2 ? SGLL_SPI_MODE_3 : SGLL_SPI_MODE_2)
+          : (config.clock_phase == ClockPhase::EDGE_2 ? SGLL_SPI_MODE_1
+                                                      : SGLL_SPI_MODE_0);
+  uint32_t ctrlr0 = sgll_spi_ctrlr0_build_motorola_8bit(spi_mode, false);
+#ifdef SPI_INTERNAL_LOOPBACK
   // SG2002 TRM CTRLR0[11]: route the TX shift-register output directly to RX.
   // This controller-level test mode intentionally bypasses the package pads.
-  ctrlr0 |= CTRLR0_SRL;
+  ctrlr0 = ctrlr0 | (SPI_CTRLR0_SRL_BIT);
 #endif
-  if (config.clock_polarity == ClockPolarity::HIGH)
+  sgll_spi_ctrlr0_set(regs_, ctrlr0);
+  if (!sgll_spi_baud_divider_set(regs_, divider) ||
+      !sgll_spi_tx_fifo_threshold_set(regs_, 0u) ||
+      !sgll_spi_rx_fifo_threshold_set(regs_, 0u))
   {
-    ctrlr0 |= CTRLR0_SCPOL;
+    Unlock();
+    return ErrorCode::NOT_SUPPORT;
   }
-  if (config.clock_phase == ClockPhase::EDGE_2)
-  {
-    ctrlr0 |= CTRLR0_SCPH;
-  }
-  Register32(base_, REG_CTRLR0) = ctrlr0;
-  Register32(base_, REG_BAUDR) = divider;
-  Register32(base_, REG_TXFTLR) = 0u;
-  Register32(base_, REG_RXFTLR) = 0u;
-  Register32(base_, REG_IMR) = 0u;
-  Register32(base_, REG_DMACR) = 0u;
-  const uint32_t clear = Register32(base_, REG_ICR);
+  sgll_spi_interrupt_mask_set(regs_, 0u);
+  sgll_spi_dma_disable(regs_);
+  const uint32_t clear = sgll_spi_interrupt_clear(regs_);
   (void)clear;
   baud_divider_ = divider;
   GetConfig() = config;
@@ -156,19 +208,16 @@ uint32_t SG200XSPI::ActualBusSpeed() const noexcept
 ErrorCode SG200XSPI::StartDmaTransfer(RawData read_data, ConstRawData write_data,
                                       OperationRW& op, DmaBufferMode buffer_mode,
                                       bool has_prefix, uint8_t prefix,
-                                      SG200XDMAC::Mode dma_mode)
+                                      sgll_dma_mode_t dma_mode)
 {
   if ((read_data.size_ != 0u && read_data.addr_ == nullptr) ||
       (write_data.size_ != 0u && write_data.addr_ == nullptr))
   {
     return ErrorCode::ARG_ERR;
   }
-  if ((op.type == OperationRW::OperationType::CALLBACK &&
-       op.data.callback == nullptr) ||
-      (op.type == OperationRW::OperationType::BLOCK &&
-       op.data.sem_info.sem == nullptr) ||
-      (op.type == OperationRW::OperationType::POLLING &&
-       op.data.status == nullptr))
+  if ((op.type == OperationRW::OperationType::CALLBACK && op.data.callback == nullptr) ||
+      (op.type == OperationRW::OperationType::BLOCK && op.data.sem_info.sem == nullptr) ||
+      (op.type == OperationRW::OperationType::POLLING && op.data.status == nullptr))
   {
     return ErrorCode::ARG_ERR;
   }
@@ -220,8 +269,8 @@ ErrorCode SG200XSPI::StartDmaTransfer(RawData read_data, ConstRawData write_data
     }
   }
   if (dma_rx.addr_ == nullptr || dma_tx.addr_ == nullptr ||
-      (reinterpret_cast<uintptr_t>(dma_rx.addr_) % HW_CACHE_LINE_SIZE) != 0u ||
-      (reinterpret_cast<uintptr_t>(dma_tx.addr_) % HW_CACHE_LINE_SIZE) != 0u ||
+      (reinterpret_cast<uintptr_t>(dma_rx.addr_) % SGLL_DCACHE_LINE_SIZE) != 0u ||
+      (reinterpret_cast<uintptr_t>(dma_tx.addr_) % SGLL_DCACHE_LINE_SIZE) != 0u ||
       frames > dma_rx.size_ || frames > dma_tx.size_ || read_offset > frames ||
       read_data.size_ > frames - read_offset)
   {
@@ -244,18 +293,22 @@ ErrorCode SG200XSPI::StartDmaTransfer(RawData read_data, ConstRawData write_data
     }
     for (size_t index = 0u; index < payload_frames; ++index)
     {
-      destination[index + read_offset] =
-          index < write_data.size_ ? source[index] : 0xFFu;
+      destination[index + read_offset] = index < write_data.size_ ? source[index] : 0xFFu;
     }
   }
 
   const uintptr_t rx_start = reinterpret_cast<uintptr_t>(dma_rx.addr_);
   const uintptr_t tx_start = reinterpret_cast<uintptr_t>(dma_tx.addr_);
 
-  ErrorCode result = SG200XDMAC::Acquire(rx_dma_channel_);
+  ErrorCode result = SG200XDMAC::AcquireFixed(dma_channels_.rx);
   if (result == ErrorCode::OK)
   {
-    result = SG200XDMAC::Acquire(tx_dma_channel_);
+    rx_dma_channel_ = dma_channels_.rx;
+    result = SG200XDMAC::AcquireFixed(dma_channels_.tx);
+    if (result == ErrorCode::OK)
+    {
+      tx_dma_channel_ = dma_channels_.tx;
+    }
   }
   if (result != ErrorCode::OK)
   {
@@ -272,8 +325,7 @@ ErrorCode SG200XSPI::StartDmaTransfer(RawData read_data, ConstRawData write_data
   active_read_ = read_data;
   active_read_offset_ = read_offset;
   active_read_needs_copy_ = buffer_mode == DmaBufferMode::STAGED;
-  circular_active_.store(dma_mode == SG200XDMAC::Mode::CIRCULAR,
-                         std::memory_order_release);
+  circular_active_.store(dma_mode == SGLL_DMA_MODE_CIRCULAR, std::memory_order_release);
   if (op.type == OperationRW::OperationType::BLOCK)
   {
     block_wait_.Start(*op.data.sem_info.sem);
@@ -284,43 +336,49 @@ ErrorCode SG200XSPI::StartDmaTransfer(RawData read_data, ConstRawData write_data
   op.MarkAsRunning();
 
   (void)Disable();
-  // With the documented zero watermarks, TX DMA requests as soon as the FIFO
-  // is empty and RX DMA requests for every received frame. This avoids a
-  // CPU-side FIFO service path for short transfers as well as long ones.
-  Register32(base_, REG_DMATDLR) = 0u;
-  Register32(base_, REG_DMARDLR) = 0u;
-  Register32(base_, REG_DMACR) = 3u;
-  Register32(base_, REG_SPIENR) = 1u;
-  Register32(base_, REG_SER) = chip_select_mask_;
+  // Request TX DMA before the SSI FIFO drains completely.  With a zero
+  // watermark the controller can observe an empty FIFO between two DMA
+  // handshakes and terminate a full-duplex transfer after the first 8-bit
+  // frame (releasing CS while the descriptor still has data).  Keeping the
+  // request threshold high leaves enough room for the next burst and holds
+  // CS continuously across the complete fixed-size record.
+  (void)sgll_spi_dma_tx_level_set(regs_, 4u);
+  // RX requests remain per-frame; the RX FIFO is drained by the DMA channel.
+  (void)sgll_spi_dma_rx_level_set(regs_, 0u);
+  sgll_spi_dma_enable(regs_, true, true);
+  sgll_spi_enable(regs_);
+  sgll_spi_slave_select_set(regs_, chip_select_mask_);
   const SG200XDMAC::Transfer rx_transfer{
       .memory = rx_start,
       .memory_capacity = dma_rx_capacity,
-      .peripheral = base_ + REG_DR,
+      .peripheral = sgll_spi_data_address(regs_),
       .count = frames,
       .request = static_cast<SG200XDMAC::Request>(
-          static_cast<uint8_t>(SG200XDMAC::Request::SPI0_RX) +
-          static_cast<uint8_t>((base_ - SPI0_BASE) / CONTROLLER_STRIDE) * 2u),
+          sgll_dmamux_spi_request_get(controller_index_, false)),
       .direction = SG200XDMAC::Direction::PERIPHERAL_TO_MEMORY,
       .width = SG200XDMAC::Width::BYTE,
-      .mode = dma_mode,
+      .mode = static_cast<SG200XDMAC::Mode>(dma_mode),
       .callback = &DmaRxCallback,
       .context = this};
   const SG200XDMAC::Transfer tx_transfer{
       .memory = tx_start,
       .memory_capacity = dma_tx_capacity,
-      .peripheral = base_ + REG_DR,
+      .peripheral = sgll_spi_data_address(regs_),
       .count = frames,
       .request = static_cast<SG200XDMAC::Request>(
-          static_cast<uint8_t>(SG200XDMAC::Request::SPI0_TX) +
-          static_cast<uint8_t>((base_ - SPI0_BASE) / CONTROLLER_STRIDE) * 2u),
+          sgll_dmamux_spi_request_get(controller_index_, true)),
       .direction = SG200XDMAC::Direction::MEMORY_TO_PERIPHERAL,
       .width = SG200XDMAC::Width::BYTE,
-      .mode = dma_mode,
+      .mode = static_cast<SG200XDMAC::Mode>(dma_mode),
       .callback = &DmaTxCallback,
       .context = this};
   result = SG200XDMAC::Start(rx_dma_channel_, rx_transfer);
   if (result == ErrorCode::OK)
   {
+    if (SPI2_MANUAL_CS && regs_ == SPI2_REGS)
+    {
+      ManualSpi2Cs(true);
+    }
     result = SG200XDMAC::Start(tx_dma_channel_, tx_transfer);
   }
   if (result != ErrorCode::OK)
@@ -352,6 +410,10 @@ void SG200XSPI::DmaRxCallback(void* context, ErrorCode result, bool in_isr)
 
 void SG200XSPI::OnDmaComplete(bool rx, ErrorCode result, bool in_isr)
 {
+  if (rx && in_isr && result == ErrorCode::OK)
+  {
+    dma_receive_count_.fetch_add(1u, std::memory_order_relaxed);
+  }
   if (result != ErrorCode::OK)
   {
     FinishDma(result, in_isr);
@@ -412,8 +474,12 @@ void SG200XSPI::FinishDma(ErrorCode result, bool in_isr)
       result = CheckError();
     }
   }
-  Register32(base_, REG_DMACR) = 0u;
+  sgll_spi_dma_disable(regs_);
   (void)Disable();
+  if (SPI2_MANUAL_CS && regs_ == SPI2_REGS)
+  {
+    ManualSpi2Cs(false);
+  }
   if (rx_dma_channel_ != 0xFFu)
   {
     SG200XDMAC::Release(rx_dma_channel_, in_isr);
@@ -456,8 +522,12 @@ void SG200XSPI::FinishDma(ErrorCode result, bool in_isr)
 
 void SG200XSPI::CancelDmaTransfer()
 {
-  Register32(base_, REG_DMACR) = 0u;
+  sgll_spi_dma_disable(regs_);
   (void)Disable();
+  if (SPI2_MANUAL_CS && regs_ == SPI2_REGS)
+  {
+    ManualSpi2Cs(false);
+  }
   if (rx_dma_channel_ != 0xFFu)
   {
     SG200XDMAC::Release(rx_dma_channel_);
@@ -503,9 +573,8 @@ ErrorCode SG200XSPI::StartCircularTransfer(size_t size, OperationRW& op, bool in
   {
     return ErrorCode::SIZE_ERR;
   }
-  return StartDmaTransfer({rx.addr_, size}, {tx.addr_, size}, op,
-                          DmaBufferMode::INTERNAL, false, 0u,
-                          SG200XDMAC::Mode::CIRCULAR);
+  return StartDmaTransfer({rx.addr_, size}, {tx.addr_, size}, op, DmaBufferMode::INTERNAL,
+                          false, 0u, SGLL_DMA_MODE_CIRCULAR);
 }
 
 ErrorCode SG200XSPI::StopCircularTransfer(bool in_isr)
@@ -553,7 +622,7 @@ ErrorCode SG200XSPI::StopCircularTransfer(bool in_isr)
       result = release_result;
     }
   }
-  Register32(base_, REG_DMACR) = 0u;
+  sgll_spi_dma_disable(regs_);
   (void)Disable();
   if (result != ErrorCode::OK)
   {
@@ -577,7 +646,9 @@ ErrorCode SG200XSPI::ReadAndWrite(RawData read_data, ConstRawData write_data,
   {
     return ErrorCode::NOT_SUPPORT;
   }
-  return StartDmaTransfer(read_data, write_data, op);
+  // LibXR SPI is DMA-only on SG2002. Keep ordinary API calls on the same
+  // path as Transfer() so buffer/cache/CS behavior cannot diverge.
+  return StartDmaTransfer(read_data, write_data, op, DmaBufferMode::STAGED);
 }
 
 ErrorCode SG200XSPI::Read(RawData read_data, OperationRW& op, bool in_isr)
@@ -626,7 +697,7 @@ ErrorCode SG200XSPI::MemWrite(uint16_t reg, ConstRawData write_data, OperationRW
 }
 
 ErrorCode SG200XSPI::MemRead(uint16_t reg, RawData read_data, OperationRW& op,
-                              bool in_isr)
+                             bool in_isr)
 {
   if (reg > 0xFFu)
   {

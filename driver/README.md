@@ -44,12 +44,24 @@ SG200x driver library: some modules are present in the source tree without
 being enabled by the default RISC-V CMake lists, and its SPI/I2C paths do not
 provide the DMA and asynchronous completion guarantees required here.
 
-Each driver keeps the SoC addresses, register offsets, and bit definitions it
-uses in its own header, so the hardware contract is visible beside the code
-that consumes it. `sg200x_mmio.hpp` only centralizes the volatile MMIO access
-cast; it does not hide chip-specific register knowledge.
+All production drivers use SGLL for hardware access. `sg2002.h` is the source
+of register layouts, addresses, fields, IRQs, and reset coordinates. Drivers
+call semantic `sgll_*` interfaces for GPIO, PINMUX, PWM, ADC, watchdog, I2C,
+SPI, DMA, PLIC, clock/reset writes, cache maintenance, fences, and the time CSR.
+There are no direct register dereferences, inline assembly, generic MMIO
+adapters, or SDK `arch_helpers.h` includes in `driver/`.
 
-DMA is the only I2C/SPI data path in this platform driver. `SG200XDMAC` uses a
+The C++ layer retains LibXR interfaces, ownership, locks, callbacks, transfer
+buffers, error mapping, and the clock-tree model/planner. SDK `request_irq()`
+connects its interrupt dispatcher to the platform. SGLL stays stateless and
+independent of LibXR/FreeRTOS; compound initialization, register sequences, and
+hardware waits are compiled in `sgll/src/`. Link the CMake `sgll` target when
+building these drivers.
+
+DMA is the only I2C/SPI data path in this platform driver. `SG200XDMAC` owns a
+descriptor pool indexed by channel and uses `sgll_dma_lli_build()` to encode
+both normal and circular descriptors. I2C/SPI objects hold their transaction
+state and buffers without embedding hardware descriptors. `SG200XDMAC` uses a
 static partition of the SG200x eight-channel DesignWare AXI DMA controller at
 `0x04330000`: Linux owns channels 0-3 and C906L owns channels 4-7. It controls
 only its partition's Top interrupt-mux fields, peripheral remap fields, channel
@@ -57,23 +69,71 @@ registers, descriptors, and C906 D-cache maintenance. The Linux kernel/DT must
 also restrict `dw_dmac` allocation to channels 0-3; interrupt routing alone
 does not prevent a Linux client from programming an unreserved channel.
 
-`sg200x_clock_tree.hpp` is the compile-time model of the C906-visible portion
-of the actual CV181x/SG200x TOP provider: the 25 MHz oscillator, PLL roots,
-C906 cores, AXI4/AXI6 buses, RTC/ADC/timer branches, and DMA/I2C/PWM/SPI
-leaves. Its `ClockId` values match the DT binding; its descriptors retain the
-real gate, bypass, mux, divider, and reset-controller fields. `MakeRatePlan`
-is a `consteval` solver for a C906L-configurable mux/divider branch. The
-reference `DEFAULT_C906L_CLOCK_PLAN` fixes the board's FPLL input at 1.5 GHz
-and derives AXI4 300 MHz, AXI6/I2C 100 MHz, 1 MHz, and SPI 187.5 MHz from it.
-`SG200XRCC` validates that FPLL contract from the hardware CSR before applying
-only the branches required by a prepared peripheral. It never retunes a PLL or
-the clock of the running C906L core. A rate that traverses an as-yet undecoded
-fractional G2 PLL still returns zero rather than a plausible-looking guess.
-Clock/reset updates use a lock-free, fail-fast writer transaction and return
-`BUSY` on overlap; they are startup/thread control-plane calls, not ISR APIs.
-Live rate decoding never waits and uses a sequence check to reject an
-intermediate hardware state with a zero result. No RCC operation disables
-machine interrupts.
+`sg200x_clock_tree.hpp` describes the C906-visible CV181x/SG200x clock graph.
+The node, register-field, parent, divider and peripheral-resource relationships
+are validated with `static_assert`. `MakeRatePlan(clock, parent, parent_hz,
+target_hz, policy)` takes ordinary values: runtime inputs are supported, and
+`constexpr` use remains optional for fixed board presets. It returns a plan
+with status and the actual rate; invalid parents, read-only clocks and rates
+outside the hardware range are rejected. `RatePolicy::Nearest`, `AtMost` and
+`Exact` make rounding explicit, including fractional-Hz boundary cases.
+Oscillator bypass paths are modeled as undivided inputs.
+
+`SG200XRCC`, implemented in `sg200x_rcc.cpp`, supplies `PlanRate`,
+`ApplyClockPlan`, `SetRate`, `EnableClock`, `DisableClock`, and `IsClockEnabled`.
+`PlanRate` chooses among live, decodable parent rates without touching hardware.
+`ApplyClockPlan` revalidates the plan and its parent rate, enables its parent
+path, programs mux/divider fields with the branch gated where appropriate,
+and restores its prior gate state. Failed transactions restore the fields they
+changed. Enabled descendants prevent disabling or retiming their parent.
+`ClockRate` reports the nominal configured rate even when a gate is off.
+
+The reference startup profile retains FPLL 1.5 GHz, AXI4 300 MHz, AXI6/I2C
+100 MHz, 1 MHz, and SPI 187.5 MHz. Defaults are applied lazily once; explicit
+runtime settings survive subsequent clock enables, peripheral preparation,
+and peripheral resets. A stale parent-rate assumption returns `CHECK_ERR`
+before writes. The C906L controller uses existing boot-owned PLLs: PLL and CPU
+clock configuration remains read-only, and active shared AXI buses cannot be
+retimed or disabled. G2 fractional PLL rates remain unknown until a decoder
+is provided, so automatic planning skips those parents.
+
+Clock/reset writes use the existing fail-fast writer transaction and return
+`BUSY` on overlap. Live queries never wait and reject an intermediate state.
+No operation disables machine interrupts. Rate changes are initialization or
+quiescent-device operations: all consumers of a shared root must be stopped,
+and their peripheral timing must be configured for the new input clock.
+Apply rate changes before constructing LibXR peripheral objects that cache
+their input clock, or recreate those objects with the updated rate.
+All SPI0-3 share `ClockId::Spi`; its rate is the SSI input, with the SPI
+controller's BAUDR divider still determining the wire speed. Peripheral-rate
+overloads use explicit functional-clock metadata rather than an APB bus gate.
+
+```cpp
+namespace ClockTree = LibXR::SG200XClockTree;
+auto& clock = LibXR::SG200XRCC::Instance();
+using ClockId = ClockTree::ClockId;
+
+// Board ownership/pinmux setup and peripheral quiescence precede these calls.
+if (clock.PreparePeripheral(ClockTree::PeripheralId::Spi2) != LibXR::ErrorCode::OK) {
+  return;
+}
+auto plan = clock.PlanRate(ClockId::Spi, requested_rate_hz,
+                           ClockTree::RatePolicy::AtMost);
+if (!plan || clock.ApplyClockPlan(plan) != LibXR::ErrorCode::OK) {
+  return;
+}
+// Configure peripheral timing from plan.actual_rate_hz, then enable its clock.
+if (clock.EnableClock(ClockId::Spi) != LibXR::ErrorCode::OK) {
+  return;
+}
+```
+
+For an explicit parent, call `ClockTree::MakeRatePlan(ClockId::Spi,
+ClockId::Fpll, clock.ClockRate(ClockId::Fpll), requested_rate_hz)`.
+`clock.SetRate(ClockId::Spi, requested_rate_hz)` combines live planning and
+application in one writer transaction. See `driver/tests/README.md` for
+repeatable planner and controller checks.
+
 SPI is only one consumer of this provider; DMA and SARADC use the same resource
 mapping already.
 Each submitted transfer claims a C906L-owned DMA channel and programs its
@@ -134,8 +194,11 @@ the board's measured reference voltage when the external reference is used.
 `SG200XI2C` implements I2C0 through I2C4 as a DesignWare APB I2C master. Its
 controller ID selects the RCC peripheral resources; the constructor prepares
 the gates/reset and reads the live `CLK_I2C` rate from `SG200XRCC`. Standard-
-and fast-mode timing counts are derived from that rate using the DesignWare
-compensation formula and validated against the register widths. It supports
+and fast-mode timing counts are derived by `sgll_i2c_timing_calculate()` using
+the DesignWare compensation formula and validated against the register widths.
+`sgll_i2c_init_with_timing()` programs those counts, preserving arbitrary
+representable input clocks rather than restricting the driver to the separate
+25/100 MHz TRM presets. It supports
 7-bit and 10-bit targets and repeated-start register reads. The constructor
 requires caller-owned, cache-line-aligned DMA command and receive staging
 buffers whose capacities are whole cache-line multiples: `IC_DATA_CMD`

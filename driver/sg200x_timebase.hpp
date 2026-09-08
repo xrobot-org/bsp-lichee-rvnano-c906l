@@ -2,6 +2,7 @@
 
 #include <cstdint>
 
+#include "sg2002.h"
 #include "timebase.hpp"
 
 namespace LibXR
@@ -17,7 +18,7 @@ namespace LibXR
 class SG200XTimebase : public Timebase
 {
  public:
-  static constexpr uint32_t DEFAULT_CLOCK_HZ = 25000000u;
+  static constexpr uint32_t DEFAULT_CLOCK_HZ = XTAL_FREQ_HZ;
 
   /**
    * @param clock_hz time CSR frequency in Hz. This must match the
