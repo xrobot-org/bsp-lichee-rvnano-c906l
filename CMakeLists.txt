@@ -80,6 +80,19 @@ add_custom_target(deploy
   USES_TERMINAL
 )
 
+# Refresh both clangd databases on demand. The firmware build already exports
+# them, but a source restructure -- moving a header, renaming a library
+# directory, editing the SDK overlay -- makes them stale without touching the
+# compiler, and clangd then reports the library headers as missing. This
+# reconfigures the staged SDK task project and re-exports without compiling.
+add_custom_target(clangd
+  COMMAND "${SG200X_BASH}" -lc
+    "exec '${CMAKE_SOURCE_DIR}/scripts/sg200x-sdk/refresh_clangd_database.sh'"
+  COMMENT "Refreshing the clangd databases"
+  WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+  USES_TERMINAL
+)
+
 if(WIN32)
   message(STATUS "Bash: ${SG200X_BASH}")
   message(STATUS "RISC-V compiler prefix: ${SG200X_CROSS_COMPILE}")

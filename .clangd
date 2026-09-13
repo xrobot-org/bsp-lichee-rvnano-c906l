@@ -1,6 +1,5 @@
 CompileFlags:
   CompilationDatabase: build/clangd
-  Remove: [-mthumb, -mcpu=*, -mfpu=*, -mfloat-abi=*]
 
 Diagnostics:
   ClangTidy:
@@ -8,15 +7,26 @@ Diagnostics:
     Remove: [
       bugprone-easily-swappable-parameters,
       bugprone-reserved-identifier,
-      clang-analyzer-core.FixedAddressDereference,
       performance-no-int-to-ptr
     ]
 
 ---
-# The analyzer loses AsyncBlockWait::Start()'s semaphore assignment after the
-# DMA callbacks are published, then reports AsyncBlockWait::Wait() as null.
+# The host-side tests and tools are compiled by native GCC for Linux, so the
+# firmware database cannot describe them: its RISC-V newlib sysroot has no
+# POSIX headers, and sys/mman.h and ucontext.h appear to be missing. Point
+# those paths at the host database instead. The firmware build exports it too;
+# refresh it alone with `cmake --build build --target clangd`.
 If:
-  PathMatch: '(.*/)?driver/sg200x_spi\.cpp'
+  PathMatch: '(.*/)?(driver/tests|sg200x-ll-driver/tests|tools|libxr/system/linux|libxr/driver/linux)/.*'
+CompileFlags:
+  CompilationDatabase: build/clangd-host
+
+---
+# mmfprobe.c provides its own __sync_* helpers for the board's musl toolchain.
+# Clang always treats those names as builtins and rejects the definitions, while
+# the GCC that compiles this file accepts them, so the diagnostic cannot be
+# cleared with a flag.
+If:
+  PathMatch: '(.*/)?tools/sg2002-camera-bridge/mmfprobe\.c'
 Diagnostics:
-  ClangTidy:
-    Remove: [clang-analyzer-core.CallAndMessage]
+  Suppress: [builtin_redeclare]

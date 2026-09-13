@@ -12,7 +12,7 @@
 #include "sg200x_pwm.hpp"
 #include "sg200x_spi.hpp"
 #include "sg200x_watchdog.hpp"
-#include "sgll.h"
+#include "sg200x_ll.h"
 
 using namespace LibXR;
 using Status = Operation<ErrorCode>::OperationPollingStatus;
@@ -42,7 +42,7 @@ void Seed(const volatile uint32_t* reg, uint32_t value)
 
 DMA_LLI_Type* Descriptor(uint8_t channel)
 {
-  const auto* ch = sgll_dma_channel_get(channel);
+  const auto* ch = sg200x_ll_dma_channel_get(channel);
   const uintptr_t address = ch->LLP_LOW | (uint64_t{ch->LLP_HIGH} << 32u);
   assert(address != 0u && address % DMA_LLI_ALIGNMENT == 0u);
   return reinterpret_cast<DMA_LLI_Type*>(address);
@@ -50,7 +50,7 @@ DMA_LLI_Type* Descriptor(uint8_t channel)
 
 void DmaInterrupt(uint8_t channel, bool complete = true)
 {
-  auto* ch = sgll_dma_channel_get(channel);
+  auto* ch = sg200x_ll_dma_channel_get(channel);
   ch->INTSTATUS = complete ? DMA_INT_TRANSFER_DONE_BIT : DMA_INT_BLOCK_DONE_BIT;
   if (complete) DMA->GLOBAL.CHEN = DMA->GLOBAL.CHEN & ~(1u << channel);
   assert(handlers[IRQ_SDMA] != nullptr);
@@ -85,7 +85,7 @@ void CheckGpio()
     assert(GPIO0_REGS->SWPORTA_DDR == 1u && GPIO0_REGS->SWPORTA_DR == 0x4001u);
     pin.Write(false);
     assert(GPIO0_REGS->SWPORTA_DDR == 0x4001u && GPIO0_REGS->SWPORTA_DR == 1u);
-    assert(sgll_pinmux_function_get(PINMUX_SD0_PWR_EN_OFFSET) == 3u);
+    assert(sg200x_ll_pinmux_function_get(PINMUX_SD0_PWR_EN_OFFSET) == 3u);
     assert(pin.SetConfig({Direction::RISING_INTERRUPT, GPIO::Pull::NONE}) ==
            ErrorCode::OK);
     auto callback = GPIO::Callback::Create(
@@ -279,25 +279,25 @@ extern "C" int request_irq(unsigned int irq, IrqHandler handler, unsigned long,
   return 0;
 }
 
-extern "C" void sgll_csr_dcache_clean_range(uintptr_t, size_t) { ++cache_operations; }
-extern "C" void sgll_csr_dcache_invalidate_range(uintptr_t, size_t)
+extern "C" void sg200x_ll_csr_dcache_clean_range(uintptr_t, size_t) { ++cache_operations; }
+extern "C" void sg200x_ll_csr_dcache_invalidate_range(uintptr_t, size_t)
 {
   ++cache_operations;
 }
-extern "C" void sgll_csr_dcache_clean_invalidate_range(uintptr_t, size_t)
+extern "C" void sg200x_ll_csr_dcache_clean_invalidate_range(uintptr_t, size_t)
 {
   ++cache_operations;
 }
-extern "C" void sgll_csr_delay_nops(uint32_t) {}
+extern "C" void sg200x_ll_csr_delay_nops(uint32_t) {}
 
-extern "C" bool __real_sgll_i2c_enable_wait(I2C_Type*, bool, uint32_t);
-extern "C" bool __wrap_sgll_i2c_enable_wait(I2C_Type* i2c, bool enabled,
+extern "C" bool __real_sg200x_ll_i2c_enable_wait(I2C_Type*, bool, uint32_t);
+extern "C" bool __wrap_sg200x_ll_i2c_enable_wait(I2C_Type* i2c, bool enabled,
                                             uint32_t attempts)
 {
   // Emulate the hardware enable acknowledgment; retain the real LL request
-  // and polling implementation. Timeout behavior is tested by SGLL itself.
+  // and polling implementation. Timeout behavior is tested by SG200X LL itself.
   if (i2c != nullptr) Seed(&i2c->ENABLE_STATUS, enabled ? 1u : 0u);
-  return __real_sgll_i2c_enable_wait(i2c, enabled, attempts);
+  return __real_sg200x_ll_i2c_enable_wait(i2c, enabled, attempts);
 }
 
 int main()
@@ -316,5 +316,5 @@ int main()
   CheckI2c();
   CheckSpi();
   assert(cache_operations != 0u);
-  std::puts("SGLL-backed GPIO/PWM/ADC/WDT/I2C/SPI/DMA driver contracts passed");
+  std::puts("SG200X LL-backed GPIO/PWM/ADC/WDT/I2C/SPI/DMA driver contracts passed");
 }

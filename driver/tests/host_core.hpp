@@ -8,11 +8,11 @@
 #endif
 
 // The host has coherent memory. These test-only hooks record maintenance calls;
-// the SGLL RV64/QEMU suite verifies the real cache instructions separately.
+// the SG200X LL RV64/QEMU suite verifies the real cache instructions separately.
 extern "C"
 {
-  void sgll_csr_dcache_clean_range(uintptr_t address, size_t size);
-  void sgll_csr_dcache_invalidate_range(uintptr_t address, size_t size);
-  void sgll_csr_dcache_clean_invalidate_range(uintptr_t address, size_t size);
-  void sgll_csr_delay_nops(uint32_t iterations);
+  void sg200x_ll_csr_dcache_clean_range(uintptr_t address, size_t size);
+  void sg200x_ll_csr_dcache_invalidate_range(uintptr_t address, size_t size);
+  void sg200x_ll_csr_dcache_clean_invalidate_range(uintptr_t address, size_t size);
+  void sg200x_ll_csr_delay_nops(uint32_t iterations);
 }

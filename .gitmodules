@@ -2,6 +2,6 @@
 	path = libxr
 	url = https://github.com/jiu-xiao/libxr
 
-[submodule "sgll"]
-	path = sgll
+[submodule "sg200x-ll-driver"]
+	path = sg200x-ll-driver
 	url = https://github.com/molqzone/sgll.git

@@ -17,9 +17,9 @@ sdk/sg200x/                   SDK pin, patches, overlay, and board config
 `driver/` contains the C906L coprocessor platform drivers directly in this
 repository; no separate driver submodule is required.
 
-The platform drivers depend on the C23 `sgll` submodule. Initialize both
-`libxr` and `sgll` with `git submodule update --init --recursive`. Peripheral
-register definitions and low-level operations belong to SGLL; LibXR adapters
+The platform drivers depend on the C23 `sg200x-ll` submodule. Initialize both
+`libxr` and `sg200x-ll` with `git submodule update --init --recursive`. Peripheral
+register definitions and low-level operations belong to SG200X LL; LibXR adapters
 and clock/resource policy belong to `driver/`.
 
 The SDK overlay accepts an application-owned `User/CMakeLists.txt` that adds

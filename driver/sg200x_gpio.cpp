@@ -19,19 +19,19 @@ void ConfigurePinmux(uint32_t offset)
   switch (offset)
   {
     case PINMUX_SD0_PWR_EN_OFFSET:
-      (void)sgll_pinmux_function_set(offset, PINMUX_SD0_PWR_EN_GPIOA14_FUNCTION);
+      (void)sg200x_ll_pinmux_function_set(offset, PINMUX_SD0_PWR_EN_GPIOA14_FUNCTION);
       break;
     case PINMUX_EMMC_CLK_OFFSET:
-      (void)sgll_pinmux_function_set(offset, PINMUX_EMMC_CLK_GPIOA22_FUNCTION);
+      (void)sg200x_ll_pinmux_function_set(offset, PINMUX_EMMC_CLK_GPIOA22_FUNCTION);
       break;
     case PINMUX_EMMC_CMD_OFFSET:
-      (void)sgll_pinmux_function_set(offset, PINMUX_EMMC_CMD_GPIOA23_FUNCTION);
+      (void)sg200x_ll_pinmux_function_set(offset, PINMUX_EMMC_CMD_GPIOA23_FUNCTION);
       break;
     case PINMUX_EMMC_DAT1_OFFSET:
-      (void)sgll_pinmux_function_set(offset, PINMUX_EMMC_DAT1_GPIOA24_FUNCTION);
+      (void)sg200x_ll_pinmux_function_set(offset, PINMUX_EMMC_DAT1_GPIOA24_FUNCTION);
       break;
     case PINMUX_EMMC_DAT0_OFFSET:
-      (void)sgll_pinmux_function_set(offset, PINMUX_EMMC_DAT0_GPIOA25_FUNCTION);
+      (void)sg200x_ll_pinmux_function_set(offset, PINMUX_EMMC_DAT0_GPIOA25_FUNCTION);
       break;
     default:
       break;
@@ -46,12 +46,12 @@ std::atomic<SG200XGPIO::IrqRegistrationState>
 
 uint8_t SG200XGPIO::ControllerIndex(const GPIO_Type* gpio) noexcept
 {
-  return static_cast<uint8_t>(sgll_gpio_index_get(gpio));
+  return static_cast<uint8_t>(sg200x_ll_gpio_index_get(gpio));
 }
 
 GPIO_Type* SG200XGPIO::BankInstance(Bank bank) noexcept
 {
-  return sgll_gpio_get(static_cast<uint32_t>(bank));
+  return sg200x_ll_gpio_get(static_cast<uint32_t>(bank));
 }
 
 uint32_t SG200XGPIO::PinmuxOffset(Bank bank, uint8_t pin) noexcept
@@ -117,11 +117,11 @@ SG200XGPIO::~SG200XGPIO()
   }
 
   interrupt_enabled_.store(false, std::memory_order_release);
-  sgll_csr_fence_io();
-  sgll_gpio_interrupt_enable(regs_, pin_mask_, false);
-  sgll_gpio_interrupt_mask(regs_, pin_mask_, true);
-  sgll_gpio_interrupt_clear(regs_, pin_mask_);
-  sgll_csr_fence_io();
+  sg200x_ll_csr_fence_io();
+  sg200x_ll_gpio_interrupt_enable(regs_, pin_mask_, false);
+  sg200x_ll_gpio_interrupt_mask(regs_, pin_mask_, true);
+  sg200x_ll_gpio_interrupt_clear(regs_, pin_mask_);
+  sg200x_ll_csr_fence_io();
   SG200XGPIO* expected = this;
   (void)instances_[controller][pin_].compare_exchange_strong(
       expected, nullptr, std::memory_order_acq_rel, std::memory_order_acquire);
@@ -130,7 +130,7 @@ SG200XGPIO::~SG200XGPIO()
 
 bool SG200XGPIO::Read()
 {
-  return regs_ != nullptr && (sgll_gpio_input_get(regs_) & pin_mask_) != 0u;
+  return regs_ != nullptr && (sg200x_ll_gpio_input_get(regs_) & pin_mask_) != 0u;
 }
 
 void SG200XGPIO::Write(bool value)
@@ -140,23 +140,23 @@ void SG200XGPIO::Write(bool value)
   if (direction_ == Direction::OUTPUT_OPEN_DRAIN && value)
   {
     // Release the output before changing its latch to high.
-    sgll_gpio_output_enable(regs_, pin_mask_, false);
-    sgll_csr_fence_io();
-    sgll_gpio_output_write(regs_, pin_mask_, true);
+    sg200x_ll_gpio_output_enable(regs_, pin_mask_, false);
+    sg200x_ll_csr_fence_io();
+    sg200x_ll_gpio_output_write(regs_, pin_mask_, true);
     return;
   }
   if (direction_ == Direction::OUTPUT_OPEN_DRAIN)
   {
-    sgll_gpio_output_write(regs_, pin_mask_, false);
-    sgll_csr_fence_io();
-    sgll_gpio_output_enable(regs_, pin_mask_, true);
+    sg200x_ll_gpio_output_write(regs_, pin_mask_, false);
+    sg200x_ll_csr_fence_io();
+    sg200x_ll_gpio_output_enable(regs_, pin_mask_, true);
     return;
   }
   if (direction_ == Direction::OUTPUT_PUSH_PULL)
   {
-    sgll_gpio_output_enable(regs_, pin_mask_, true);
+    sg200x_ll_gpio_output_enable(regs_, pin_mask_, true);
   }
-  sgll_gpio_output_write(regs_, pin_mask_, value);
+  sg200x_ll_gpio_output_write(regs_, pin_mask_, value);
 }
 
 ErrorCode SG200XGPIO::SetConfig(Configuration config)
@@ -186,36 +186,36 @@ ErrorCode SG200XGPIO::SetConfig(Configuration config)
 
   direction_ = config.direction;
   interrupt_enabled_.store(false, std::memory_order_release);
-  sgll_csr_fence_io();
-  sgll_gpio_interrupt_enable(regs_, pin_mask_, false);
-  sgll_gpio_interrupt_mask(regs_, pin_mask_, true);
-  sgll_gpio_interrupt_clear(regs_, pin_mask_);
+  sg200x_ll_csr_fence_io();
+  sg200x_ll_gpio_interrupt_enable(regs_, pin_mask_, false);
+  sg200x_ll_gpio_interrupt_mask(regs_, pin_mask_, true);
+  sg200x_ll_gpio_interrupt_clear(regs_, pin_mask_);
 
   switch (config.direction)
   {
     case Direction::INPUT:
-      sgll_gpio_output_enable(regs_, pin_mask_, false);
-      sgll_gpio_interrupt_edge_set(regs_, pin_mask_, false);
+      sg200x_ll_gpio_output_enable(regs_, pin_mask_, false);
+      sg200x_ll_gpio_interrupt_edge_set(regs_, pin_mask_, false);
       break;
     case Direction::OUTPUT_PUSH_PULL:
-      sgll_gpio_output_enable(regs_, pin_mask_, true);
-      sgll_gpio_interrupt_edge_set(regs_, pin_mask_, false);
+      sg200x_ll_gpio_output_enable(regs_, pin_mask_, true);
+      sg200x_ll_gpio_interrupt_edge_set(regs_, pin_mask_, false);
       break;
     case Direction::OUTPUT_OPEN_DRAIN:
-      sgll_gpio_output_write(regs_, pin_mask_, false);
-      sgll_csr_fence_io();
-      sgll_gpio_output_enable(regs_, pin_mask_, true);
-      sgll_gpio_interrupt_edge_set(regs_, pin_mask_, false);
+      sg200x_ll_gpio_output_write(regs_, pin_mask_, false);
+      sg200x_ll_csr_fence_io();
+      sg200x_ll_gpio_output_enable(regs_, pin_mask_, true);
+      sg200x_ll_gpio_interrupt_edge_set(regs_, pin_mask_, false);
       break;
     case Direction::RISING_INTERRUPT:
-      sgll_gpio_output_enable(regs_, pin_mask_, false);
-      sgll_gpio_interrupt_edge_set(regs_, pin_mask_, true);
-      sgll_gpio_interrupt_polarity_set(regs_, pin_mask_, true);
+      sg200x_ll_gpio_output_enable(regs_, pin_mask_, false);
+      sg200x_ll_gpio_interrupt_edge_set(regs_, pin_mask_, true);
+      sg200x_ll_gpio_interrupt_polarity_set(regs_, pin_mask_, true);
       break;
     case Direction::FALL_INTERRUPT:
-      sgll_gpio_output_enable(regs_, pin_mask_, false);
-      sgll_gpio_interrupt_edge_set(regs_, pin_mask_, true);
-      sgll_gpio_interrupt_polarity_set(regs_, pin_mask_, false);
+      sg200x_ll_gpio_output_enable(regs_, pin_mask_, false);
+      sg200x_ll_gpio_interrupt_edge_set(regs_, pin_mask_, true);
+      sg200x_ll_gpio_interrupt_polarity_set(regs_, pin_mask_, false);
       break;
     case Direction::FALL_RISING_INTERRUPT:
       return ErrorCode::NOT_SUPPORT;
@@ -268,11 +268,11 @@ ErrorCode SG200XGPIO::EnableInterrupt()
   }
 
   interrupt_enabled_.store(true, std::memory_order_release);
-  sgll_csr_fence_io();
-  sgll_gpio_interrupt_clear(regs_, pin_mask_);
-  sgll_gpio_interrupt_mask(regs_, pin_mask_, false);
-  sgll_gpio_interrupt_enable(regs_, pin_mask_, true);
-  sgll_csr_fence_io();
+  sg200x_ll_csr_fence_io();
+  sg200x_ll_gpio_interrupt_clear(regs_, pin_mask_);
+  sg200x_ll_gpio_interrupt_mask(regs_, pin_mask_, false);
+  sg200x_ll_gpio_interrupt_enable(regs_, pin_mask_, true);
+  sg200x_ll_csr_fence_io();
   return ErrorCode::OK;
 }
 
@@ -284,11 +284,11 @@ ErrorCode SG200XGPIO::DisableInterrupt()
   }
 
   interrupt_enabled_.store(false, std::memory_order_release);
-  sgll_csr_fence_io();
-  sgll_gpio_interrupt_enable(regs_, pin_mask_, false);
-  sgll_gpio_interrupt_mask(regs_, pin_mask_, true);
-  sgll_gpio_interrupt_clear(regs_, pin_mask_);
-  sgll_csr_fence_io();
+  sg200x_ll_csr_fence_io();
+  sg200x_ll_gpio_interrupt_enable(regs_, pin_mask_, false);
+  sg200x_ll_gpio_interrupt_mask(regs_, pin_mask_, true);
+  sg200x_ll_gpio_interrupt_clear(regs_, pin_mask_);
+  sg200x_ll_csr_fence_io();
   return ErrorCode::OK;
 }
 
@@ -301,11 +301,11 @@ void SG200XGPIO::CheckInterrupt(uintptr_t gpio_base)
     return;
   }
 
-  GPIO_Type* const gpio = sgll_gpio_get(controller);
-  const uint32_t pending = sgll_gpio_interrupt_status_get(gpio);
+  GPIO_Type* const gpio = sg200x_ll_gpio_get(controller);
+  const uint32_t pending = sg200x_ll_gpio_interrupt_status_get(gpio);
   if (pending != 0u)
   {
-    sgll_gpio_interrupt_clear(gpio, pending);
+    sg200x_ll_gpio_interrupt_clear(gpio, pending);
   }
 
   for (uint8_t pin = 0u; pin < PIN_COUNT; ++pin)
@@ -328,7 +328,7 @@ int SG200XGPIO::InterruptHandler(int irq, void*)
     return 0;
   }
   const auto controller = static_cast<uint8_t>(irq - static_cast<int>(GPIO0_IRQ));
-  CheckInterrupt(reinterpret_cast<uintptr_t>(sgll_gpio_get(controller)));
+  CheckInterrupt(reinterpret_cast<uintptr_t>(sg200x_ll_gpio_get(controller)));
   return 0;
 }
 

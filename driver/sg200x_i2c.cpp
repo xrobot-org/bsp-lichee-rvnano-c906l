@@ -22,10 +22,10 @@ SG200XI2C::SG200XI2C(Controller controller, RawData tx_command_buffer, RawData r
   if (index >= CONTROLLER_COUNT || tx_stage_.addr_ == nullptr ||
       rx_stage_.addr_ == nullptr || tx_stage_.size_ < sizeof(uint16_t) ||
       rx_stage_.size_ < sizeof(uint16_t) ||
-      (reinterpret_cast<uintptr_t>(tx_stage_.addr_) % SGLL_DCACHE_LINE_SIZE) != 0u ||
-      (reinterpret_cast<uintptr_t>(rx_stage_.addr_) % SGLL_DCACHE_LINE_SIZE) != 0u ||
-      (tx_stage_.size_ % SGLL_DCACHE_LINE_SIZE) != 0u ||
-      (rx_stage_.size_ % SGLL_DCACHE_LINE_SIZE) != 0u || request_irq == nullptr ||
+      (reinterpret_cast<uintptr_t>(tx_stage_.addr_) % LL_DCACHE_LINE_SIZE) != 0u ||
+      (reinterpret_cast<uintptr_t>(rx_stage_.addr_) % LL_DCACHE_LINE_SIZE) != 0u ||
+      (tx_stage_.size_ % LL_DCACHE_LINE_SIZE) != 0u ||
+      (rx_stage_.size_ % LL_DCACHE_LINE_SIZE) != 0u || request_irq == nullptr ||
       !detail::IsOwnedChannel(dma_channels.tx) ||
       !detail::IsOwnedChannel(dma_channels.rx) || dma_channels.tx == dma_channels.rx)
   {
@@ -54,7 +54,7 @@ SG200XI2C::SG200XI2C(Controller controller, RawData tx_command_buffer, RawData r
     controller_claimed_[index].store(false, std::memory_order_release);
     return;
   }
-  regs_ = sgll_i2c_get(index);
+  regs_ = sg200x_ll_i2c_get(index);
   if (SetConfig(config) != ErrorCode::OK)
   {
     regs_ = nullptr;
@@ -78,8 +78,8 @@ SG200XI2C::SG200XI2C(Controller controller, RawData tx_command_buffer, RawData r
       // The initialized instance was published before request_irq(), so an
       // interrupt arriving in this window can be dispatched without masking
       // machine interrupts.
-      sgll_plic_irq_complete(IRQ0 + index);
-      sgll_csr_fence_io();
+      sg200x_ll_plic_irq_complete(IRQ0 + index);
+      sg200x_ll_csr_fence_io();
       irq_registered_[index] = true;
     }
   }
@@ -96,7 +96,7 @@ SG200XI2C::SG200XI2C(Controller controller, RawData tx_command_buffer, RawData r
 
 ErrorCode SG200XI2C::Enable(bool enabled) const
 {
-  return sgll_i2c_enable_wait(regs_, enabled, ENABLE_WAIT_ATTEMPTS) ? ErrorCode::OK
+  return sg200x_ll_i2c_enable_wait(regs_, enabled, ENABLE_WAIT_ATTEMPTS) ? ErrorCode::OK
                                                                     : ErrorCode::TIMEOUT;
 }
 
@@ -121,19 +121,19 @@ ErrorCode SG200XI2C::SetConfig(Configuration config)
     active_.store(false, std::memory_order_release);
     return ErrorCode::NOT_SUPPORT;
   }
-  sgll_i2c_timing_t timing;
-  if (!sgll_i2c_timing_calculate(input_clock_hz_, &timing))
+  sg200x_ll_i2c_timing_t timing;
+  if (!sg200x_ll_i2c_timing_calculate(input_clock_hz_, &timing))
   {
     active_.store(false, std::memory_order_release);
     return ErrorCode::NOT_SUPPORT;
   }
-  sgll_i2c_init_t init;
-  sgll_i2c_struct_init(&init);
+  sg200x_ll_i2c_init_t init;
+  sg200x_ll_i2c_struct_init(&init);
   init.speed = config.clock_speed == 400000u ? I2C_SPEED_FAST : I2C_SPEED_STANDARD;
   ErrorCode result = Enable(false);
   if (result == ErrorCode::OK)
   {
-    result = sgll_i2c_init_with_timing(regs_, &init, &timing) ? Enable(true)
+    result = sg200x_ll_i2c_init_with_timing(regs_, &init, &timing) ? Enable(true)
                                                               : ErrorCode::STATE_ERR;
   }
   active_.store(false, std::memory_order_release);
@@ -203,16 +203,16 @@ ErrorCode SG200XI2C::Start(uint16_t slave, const uint8_t* prefix, size_t prefix_
   for (size_t i = 0; i < prefix_size; ++i)
   {
     cmd[i] = static_cast<uint16_t>(
-        sgll_i2c_data_command_build(prefix[i], false, i + 1u == commands, false));
+        sg200x_ll_i2c_data_command_build(prefix[i], false, i + 1u == commands, false));
   }
   for (size_t i = 0; i < write_size; ++i)
   {
-    cmd[prefix_size + i] = static_cast<uint16_t>(sgll_i2c_data_command_build(
+    cmd[prefix_size + i] = static_cast<uint16_t>(sg200x_ll_i2c_data_command_build(
         write[i], false, prefix_size + i + 1u == commands, false));
   }
   for (size_t i = 0; i < read.size_; ++i)
   {
-    cmd[prefix_size + write_size + i] = static_cast<uint16_t>(sgll_i2c_data_command_build(
+    cmd[prefix_size + write_size + i] = static_cast<uint16_t>(sg200x_ll_i2c_data_command_build(
         0u, true, i + 1u == read.size_, i == 0u && prefix_size + write_size != 0u));
   }
   ErrorCode result = SG200XDMAC::AcquireFixed(dma_channels_.tx);
@@ -263,11 +263,11 @@ ErrorCode SG200XI2C::Start(uint16_t slave, const uint8_t* prefix, size_t prefix_
     Complete(result, false, false);
     return result;
   }
-  sgll_i2c_master_address_set(regs_, slave, slave > I2C_TAR_7BIT_ADDRESS_MASK);
-  sgll_i2c_dma_threshold_set(regs_, 0u, 0u);
-  sgll_i2c_interrupt_mask_set(regs_, I2C_INTR_TX_ABRT_BIT | I2C_INTR_STOP_DET_BIT);
-  (void)sgll_i2c_interrupt_clear(regs_);
-  sgll_i2c_dma_enable(regs_, read.size_ != 0u, true);
+  sg200x_ll_i2c_master_address_set(regs_, slave, slave > I2C_TAR_7BIT_ADDRESS_MASK);
+  sg200x_ll_i2c_dma_threshold_set(regs_, 0u, 0u);
+  sg200x_ll_i2c_interrupt_mask_set(regs_, I2C_INTR_TX_ABRT_BIT | I2C_INTR_STOP_DET_BIT);
+  (void)sg200x_ll_i2c_interrupt_clear(regs_);
+  sg200x_ll_i2c_dma_enable(regs_, read.size_ != 0u, true);
   result = Enable(true);
   if (result != ErrorCode::OK)
   {
@@ -280,10 +280,10 @@ ErrorCode SG200XI2C::Start(uint16_t slave, const uint8_t* prefix, size_t prefix_
     result = SG200XDMAC::Start(
         rx_channel_, {.memory = reinterpret_cast<uintptr_t>(rx_stage_.addr_),
                       .memory_capacity = rx_stage_.size_,
-                      .peripheral = sgll_i2c_data_address(regs_),
+                      .peripheral = sg200x_ll_i2c_data_address(regs_),
                       .count = read.size_,
                       .request = static_cast<SG200XDMAC::Request>(
-                          sgll_dmamux_i2c_request_get(controller_index_, false)),
+                          sg200x_ll_dmamux_i2c_request_get(controller_index_, false)),
                       .direction = SG200XDMAC::Direction::PERIPHERAL_TO_MEMORY,
                       .width = SG200XDMAC::Width::HALF_WORD,
                       .mode = SG200XDMAC::Mode::NORMAL,
@@ -295,10 +295,10 @@ ErrorCode SG200XI2C::Start(uint16_t slave, const uint8_t* prefix, size_t prefix_
     result = SG200XDMAC::Start(tx_channel_,
                                {.memory = reinterpret_cast<uintptr_t>(tx_stage_.addr_),
                                 .memory_capacity = tx_stage_.size_,
-                                .peripheral = sgll_i2c_data_address(regs_),
+                                .peripheral = sg200x_ll_i2c_data_address(regs_),
                                 .count = commands,
                                 .request = static_cast<SG200XDMAC::Request>(
-                                    sgll_dmamux_i2c_request_get(controller_index_, true)),
+                                    sg200x_ll_dmamux_i2c_request_get(controller_index_, true)),
                                 .direction = SG200XDMAC::Direction::MEMORY_TO_PERIPHERAL,
                                 .width = SG200XDMAC::Width::HALF_WORD,
                                 .mode = SG200XDMAC::Mode::NORMAL,
@@ -367,16 +367,16 @@ int SG200XI2C::Interrupt(int irq, void*)
   {
     return 0;
   }
-  const uint32_t raw = sgll_i2c_raw_interrupt_status_get(self->regs_);
+  const uint32_t raw = sg200x_ll_i2c_raw_interrupt_status_get(self->regs_);
   if (raw & I2C_INTR_TX_ABRT_BIT)
   {
-    const uint32_t x = sgll_i2c_abort_clear(self->regs_);
+    const uint32_t x = sg200x_ll_i2c_abort_clear(self->regs_);
     (void)x;
     self->Complete(ErrorCode::NO_RESPONSE, true);
   }
   if (raw & I2C_INTR_STOP_DET_BIT)
   {
-    const uint32_t x = sgll_i2c_stop_clear(self->regs_);
+    const uint32_t x = sg200x_ll_i2c_stop_clear(self->regs_);
     (void)x;
     self->stop_done_ = true;
     if (self->tx_done_ && self->rx_done_)
@@ -400,8 +400,8 @@ void SG200XI2C::Complete(ErrorCode result, bool in_isr, bool notify_operation)
     finishing_.store(false, std::memory_order_release);
     return;
   }
-  sgll_i2c_dma_disable(regs_);
-  sgll_i2c_interrupt_mask_set(regs_, 0u);
+  sg200x_ll_i2c_dma_disable(regs_);
+  sg200x_ll_i2c_interrupt_mask_set(regs_, 0u);
   if (tx_channel_ != 0xFFu)
   {
     const ErrorCode release_result = SG200XDMAC::Release(tx_channel_, in_isr);
@@ -431,7 +431,7 @@ void SG200XI2C::Complete(ErrorCode result, bool in_isr, bool notify_operation)
   if (result != ErrorCode::OK)
   {
     (void)Enable(false);
-    const uint32_t clear = sgll_i2c_interrupt_clear(regs_);
+    const uint32_t clear = sg200x_ll_i2c_interrupt_clear(regs_);
     (void)clear;
     (void)Enable(true);
   }

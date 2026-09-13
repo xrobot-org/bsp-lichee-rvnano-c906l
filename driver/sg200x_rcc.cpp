@@ -10,7 +10,7 @@ namespace detail
 {
 inline uint32_t RccField(const SG200XClockTree::RegisterField& field) noexcept
 {
-  return field.Exists() ? sgll_rcc_field_read(field.offset, field.shift, field.width)
+  return field.Exists() ? sg200x_ll_rcc_field_read(field.offset, field.shift, field.width)
                         : 0u;
 }
 
@@ -21,11 +21,11 @@ inline uint32_t RccDividerValue(const SG200XClockTree::Divider& divider) noexcep
     return 1u;
   }
   if (divider.reset_value != 0u &&
-      !sgll_rcc_div_uses_register_factor(divider.field.offset))
+      !sg200x_ll_rcc_div_uses_register_factor(divider.field.offset))
   {
     return divider.reset_value;
   }
-  return sgll_rcc_div_factor_raw_get(divider.field.offset, divider.field.width);
+  return sg200x_ll_rcc_div_factor_raw_get(divider.field.offset, divider.field.width);
 }
 
 inline uint8_t RccParentIndex(const SG200XClockTree::ClockNode& node) noexcept
@@ -54,11 +54,11 @@ inline uint8_t RccParentIndex(const SG200XClockTree::ClockNode& node) noexcept
 
 inline uint32_t RccG6PllRate(uint16_t csr) noexcept
 {
-  const uint32_t value = sgll_rcc_g6_pll_read(csr);
-  const uint32_t pre = sgll_field_get(value, PLL_G6_PREDIV_SHIFT, PLL_G6_DIVIDER_WIDTH);
-  const uint32_t post = sgll_field_get(value, PLL_G6_POSTDIV_SHIFT, PLL_G6_DIVIDER_WIDTH);
+  const uint32_t value = sg200x_ll_rcc_g6_pll_read(csr);
+  const uint32_t pre = sg200x_ll_field_get(value, PLL_G6_PREDIV_SHIFT, PLL_G6_DIVIDER_WIDTH);
+  const uint32_t post = sg200x_ll_field_get(value, PLL_G6_POSTDIV_SHIFT, PLL_G6_DIVIDER_WIDTH);
   const uint32_t multiplier =
-      sgll_field_get(value, PLL_G6_MULTIPLIER_SHIFT, PLL_G6_DIVIDER_WIDTH);
+      sg200x_ll_field_get(value, PLL_G6_MULTIPLIER_SHIFT, PLL_G6_DIVIDER_WIDTH);
   if (pre == 0u || post == 0u || multiplier == 0u)
   {
     return 0u;
@@ -94,7 +94,7 @@ struct SG200XRCC::Transaction
     if (!Tree::IsFieldWellFormed(field) || !field.Exists() ||
         static_cast<uint64_t>(value) >= (uint64_t{1u} << field.width))
       return false;
-    return sgll_rcc_field_write(field.offset, field.shift, field.width, value);
+    return sg200x_ll_rcc_field_write(field.offset, field.shift, field.width, value);
   }
 
   bool Write(const Tree::RegisterField& field, uint32_t value) noexcept
@@ -168,7 +168,7 @@ bool SG200XRCC::TryBeginWrite() noexcept
 
 void SG200XRCC::EndWrite() noexcept
 {
-  sgll_csr_fence_io();
+  sg200x_ll_csr_fence_io();
   write_sequence_.fetch_add(1u, std::memory_order_release);
   write_busy_.clear(std::memory_order_release);
 }
@@ -225,7 +225,7 @@ SG200XRCC::ClockRatePlan SG200XRCC::PlanRate(ClockId clock, uint32_t target_rate
   plan.clock = clock;
   plan.target_rate_hz = target_rate_hz;
   if ((before & 1u) == 0u) plan = PlanRateLocked(clock, target_rate_hz, policy);
-  sgll_csr_fence_io();
+  sg200x_ll_csr_fence_io();
   if ((before & 1u) != 0u || before != write_sequence_.load(std::memory_order_acquire))
     plan.status = Tree::PlanStatus::Busy;
   return plan;
@@ -245,7 +245,7 @@ bool SG200XRCC::PlanMatchesHardware(const ClockRatePlan& plan) const noexcept
   const auto* node = Tree::Find(plan.rate_clock);
   if (node == nullptr || detail::RccParentIndex(*node) != plan.parent_index) return false;
   if (node->bypass.Exists() && plan.parent_index == 0u) return true;
-  return sgll_rcc_div_reset_is_deasserted(node->divider0.field.offset) &&
+  return sg200x_ll_rcc_div_reset_is_deasserted(node->divider0.field.offset) &&
          detail::RccDividerValue(node->divider0) == plan.divider;
 }
 
@@ -447,7 +447,7 @@ bool SG200XRCC::IsClockEnabledRecursive(ClockId clock, uint8_t depth) const noex
           ? node->divider1
           : node->divider0;
   if (divider.Exists() && !(node->bypass.Exists() && parent == 0u) &&
-      !sgll_rcc_div_reset_is_deasserted(divider.field.offset))
+      !sg200x_ll_rcc_div_reset_is_deasserted(divider.field.offset))
     return false;
   return IsClockEnabledRecursive(node->parents.ids[parent], depth + 1u);
 }
@@ -457,7 +457,7 @@ bool SG200XRCC::IsClockEnabled(ClockId clock) const noexcept
   const uint32_t before = write_sequence_.load(std::memory_order_acquire);
   if ((before & 1u) != 0u) return false;
   const bool enabled = IsClockEnabledRecursive(clock, 0u);
-  sgll_csr_fence_io();
+  sg200x_ll_csr_fence_io();
   return before == write_sequence_.load(std::memory_order_acquire) && enabled;
 }
 
@@ -510,7 +510,7 @@ uint32_t SG200XRCC::ClockRate(ClockId clock) const noexcept
   const uint32_t before = write_sequence_.load(std::memory_order_acquire);
   if ((before & 1u) != 0u) return 0u;
   const uint32_t rate = ClockRateRecursive(clock, 0u);
-  sgll_csr_fence_io();
+  sg200x_ll_csr_fence_io();
   return before == write_sequence_.load(std::memory_order_acquire) ? rate : 0u;
 }
 
@@ -524,21 +524,21 @@ ErrorCode SG200XRCC::ReleaseResetLocked(ResetId reset) noexcept
 {
   const auto target = Tree::DeviceResetTarget(reset);
   if (target == RESET_NONE) return ErrorCode::ARG_ERR;
-  sgll_rcc_reset_release(target);
-  sgll_csr_fence_io();
-  return sgll_rcc_reset_is_released(target) ? ErrorCode::OK : ErrorCode::CHECK_ERR;
+  sg200x_ll_rcc_reset_release(target);
+  sg200x_ll_csr_fence_io();
+  return sg200x_ll_rcc_reset_is_released(target) ? ErrorCode::OK : ErrorCode::CHECK_ERR;
 }
 
 ErrorCode SG200XRCC::PulseResetLocked(ResetId reset) noexcept
 {
   const auto target = Tree::DeviceResetTarget(reset);
   if (target == RESET_NONE) return ErrorCode::ARG_ERR;
-  sgll_rcc_reset_assert(target);
-  sgll_csr_fence_io();
-  const bool asserted = !sgll_rcc_reset_is_released(target);
-  sgll_rcc_reset_release(target);
-  sgll_csr_fence_io();
-  return asserted && sgll_rcc_reset_is_released(target) ? ErrorCode::OK
+  sg200x_ll_rcc_reset_assert(target);
+  sg200x_ll_csr_fence_io();
+  const bool asserted = !sg200x_ll_rcc_reset_is_released(target);
+  sg200x_ll_rcc_reset_release(target);
+  sg200x_ll_csr_fence_io();
+  return asserted && sg200x_ll_rcc_reset_is_released(target) ? ErrorCode::OK
                                                         : ErrorCode::CHECK_ERR;
 }
 

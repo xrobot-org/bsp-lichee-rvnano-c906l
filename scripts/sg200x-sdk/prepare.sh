@@ -53,7 +53,7 @@ test -f "$SG200X_BSP_ROOT/driver/sg200x_adc.cpp" || {
   echo "SG200x ADC driver source is missing." >&2
   exit 1
 }
-test -f "$SG200X_BSP_ROOT/sgll/inc/sg2002.h" || {
+test -f "$SG200X_BSP_ROOT/sg200x-ll-driver/device/sg2002.h" || {
   echo "SG2002 device header is missing." >&2
   exit 1
 }

@@ -10,6 +10,7 @@ source "$sdk_assets/sdk.env"
 sdk_source_dir=${SG200X_SDK_DIR:-}
 output_dir=${OUTPUT_DIR:-$bsp_root/build/firmware}
 clangd_dir=${CLANGD_OUTPUT_DIR:-$bsp_root/build/clangd}
+clangd_host_dir=${CLANGD_HOST_OUTPUT_DIR:-$bsp_root/build/clangd-host}
 sdk_dir=$bsp_root/build/sdk-worktree
 rtos_env_dir=$sdk_dir/freertos/cvitek/sg200x-licheervnano-env
 rtos_project=sg2002_licheervnano
@@ -65,13 +66,19 @@ stage_licheervnano_environment() {
 
 export_compile_commands() {
   local database=$sdk_dir/freertos/cvitek/build/task/compile_commands.json
-  [[ -s $database ]] || return 0
-  mkdir -p "$clangd_dir"
-  # Native CMake emits GCC commands. Generate a clangd-only database with a
-  # Clang driver and target while deriving libstdc++ paths from that command's
-  # compiler; the generated file is ignored and never becomes project config.
-  python3 "$port_root/export_clangd_database.py" "$database" \
-    "$clangd_dir/compile_commands.json"
+  if [[ -s $database ]]; then
+    mkdir -p "$clangd_dir"
+    # Native CMake emits GCC commands. Generate a clangd-only database with a
+    # Clang driver and target while deriving libstdc++ paths from that command's
+    # compiler; the generated file is ignored and never becomes project config.
+    python3 "$port_root/export_clangd_database.py" "$database" \
+      "$clangd_dir/compile_commands.json"
+  fi
+  # The firmware database cannot describe the host-side tests and tools, which
+  # are compiled for Linux rather than for the C906. Keep their database current
+  # from the same build so clangd stays consistent without a separate step.
+  cmake -DBSP_ROOT="$bsp_root" -DOUTPUT_DIR="$clangd_host_dir" \
+    -P "$port_root/export_clangd_host_database.cmake" || true
 }
 
 stage_sdk_worktree

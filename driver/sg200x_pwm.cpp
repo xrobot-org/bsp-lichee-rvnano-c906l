@@ -66,13 +66,13 @@ uint8_t SG200XPWM::LocalChannel(uint8_t channel) noexcept
 
 PWM_Type* SG200XPWM::ControllerInstance(uint8_t channel) noexcept
 {
-  return channel < CHANNEL_COUNT ? sgll_pwm_get(channel / PWM_CHANNELS_PER_CONTROLLER)
+  return channel < CHANNEL_COUNT ? sg200x_ll_pwm_get(channel / PWM_CHANNELS_PER_CONTROLLER)
                                  : nullptr;
 }
 
 void SG200XPWM::ConfigurePinmux(const PinmuxConfiguration& pinmux) noexcept
 {
-  (void)sgll_pinmux_function_set(pinmux.offset, pinmux.function);
+  (void)sg200x_ll_pinmux_function_set(pinmux.offset, pinmux.function);
 }
 
 uint32_t SG200XPWM::DutyToHighTicks(float duty, uint32_t period) noexcept
@@ -93,13 +93,13 @@ uint32_t SG200XPWM::DutyToHighTicks(float duty, uint32_t period) noexcept
 
 void SG200XPWM::WritePeriodRegisters() noexcept
 {
-  (void)sgll_pwm_period_set(regs_, LocalChannel(channel_), period_ticks_,
+  (void)sg200x_ll_pwm_period_set(regs_, LocalChannel(channel_), period_ticks_,
                             period_ticks_ - high_ticks_);
 }
 
 void SG200XPWM::ApplyDynamicUpdate() noexcept
 {
-  (void)sgll_pwm_update(regs_, channel_mask_);
+  (void)sg200x_ll_pwm_update(regs_, channel_mask_);
 }
 
 ErrorCode SG200XPWM::SetConfig(Configuration config)
@@ -165,7 +165,7 @@ ErrorCode SG200XPWM::SetPolarity(bool active_high)
   }
 
   active_high_ = active_high;
-  sgll_pwm_polarity_set(regs_, channel_mask_, active_high_);
+  sg200x_ll_pwm_polarity_set(regs_, channel_mask_, active_high_);
   return ErrorCode::OK;
 }
 
@@ -176,7 +176,7 @@ ErrorCode SG200XPWM::Enable()
     return ErrorCode::STATE_ERR;
   }
 
-  (void)sgll_pwm_start(regs_, channel_mask_, active_high_);
+  (void)sg200x_ll_pwm_start(regs_, channel_mask_, active_high_);
   enabled_ = true;
   return ErrorCode::OK;
 }
@@ -188,7 +188,7 @@ ErrorCode SG200XPWM::Disable()
     return ErrorCode::ARG_ERR;
   }
 
-  (void)sgll_pwm_stop(regs_, channel_mask_);
+  (void)sg200x_ll_pwm_stop(regs_, channel_mask_);
   enabled_ = false;
   return ErrorCode::OK;
 }
