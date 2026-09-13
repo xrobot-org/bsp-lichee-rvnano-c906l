@@ -39,7 +39,7 @@ extern "C" void sg200x_config_assert(const char* file, unsigned long line)
   trace[9] = ~trace[8];
   trace[10] = file_tag;
   trace[11] = ~trace[10];
-  sgll_csr_dcache_clean_invalidate_range(BOOT_TRACE_ADDRESS + 16u, 32u);
+  sg200x_ll_csr_dcache_clean_invalidate_range(BOOT_TRACE_ADDRESS + 16u, 32u);
 
   for (;;)
   {

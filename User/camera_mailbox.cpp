@@ -1,6 +1,6 @@
 /**
  * @file camera_mailbox.cpp
- * @brief Camera bridge wire-format validation over the SGLL mailbox transport.
+ * @brief Camera bridge wire-format validation over the SG200X LL mailbox transport.
  * @see tools/sg2002-camera-bridge/bridge.c.
  */
 #include "camera_mailbox.hpp"
@@ -46,7 +46,7 @@ static_assert(offsetof(Header, height) == 26U);
 static_assert(offsetof(Header, crc32) == 28U);
 static_assert(offsetof(Header, producer_drops) == 32U);
 
-constexpr sgll_mbox_config_t MAILBOX = {
+constexpr sg200x_ll_mbox_config_t MAILBOX = {
     .base = MAILBOX_ADDRESS,
     .size = MAILBOX_SIZE,
     .header_size = HEADER_SIZE,
@@ -73,12 +73,12 @@ uint32_t Crc32(const uint8_t* bytes, size_t length)
 CameraMailbox::Result CameraMailbox::Acquire(AccessUnit& access_unit)
 {
   Header header{};
-  const auto result = sgll_mbox_rx_acquire(&MAILBOX, &header, sizeof(header));
-  if (result == SGLL_MBOX_BUSY)
+  const auto result = sg200x_ll_mbox_rx_acquire(&MAILBOX, &header, sizeof(header));
+  if (result == LL_MBOX_BUSY)
   {
     return Result::Empty;
   }
-  if (result != SGLL_MBOX_OK)
+  if (result != LL_MBOX_OK)
   {
     return Result::InvalidHeader;
   }
@@ -90,7 +90,7 @@ CameraMailbox::Result CameraMailbox::Acquire(AccessUnit& access_unit)
   }
 
   const uint8_t* payload = nullptr;
-  if (sgll_mbox_rx_payload(&MAILBOX, header.length, &payload) != SGLL_MBOX_OK ||
+  if (sg200x_ll_mbox_rx_payload(&MAILBOX, header.length, &payload) != LL_MBOX_OK ||
       Crc32(payload, header.length) != header.crc32)
   {
     Release();
@@ -106,4 +106,4 @@ CameraMailbox::Result CameraMailbox::Acquire(AccessUnit& access_unit)
   return Result::Ready;
 }
 
-void CameraMailbox::Release() { (void)sgll_mbox_rx_release(&MAILBOX); }
+void CameraMailbox::Release() { (void)sg200x_ll_mbox_rx_release(&MAILBOX); }

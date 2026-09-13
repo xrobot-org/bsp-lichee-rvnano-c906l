@@ -83,8 +83,8 @@ void TraceSpi(uint32_t stage, uint32_t value = 0u)
   trace[0] = stage;
   trace[1] = value;
   UpdateTraceCounters(trace);
-  sgll_csr_dcache_clean_invalidate_range(TRACE_ADDRESS, 64u);
-  sgll_csr_fence_io();
+  sg200x_ll_csr_dcache_clean_invalidate_range(TRACE_ADDRESS, 64u);
+  sg200x_ll_csr_fence_io();
 }
 
 uint32_t Get32(const uint8_t* source);
@@ -101,8 +101,8 @@ void TraceSpiTransfer(const std::array<uint8_t, FRAME_SIZE>& frame,
   trace[4] = static_cast<uint32_t>(frame[3]) | (static_cast<uint32_t>(response[3]) << 8u);
   trace[5] = dma_completions;
   UpdateTraceCounters(trace);
-  sgll_csr_dcache_clean_invalidate_range(TRACE_ADDRESS, 64u);
-  sgll_csr_fence_io();
+  sg200x_ll_csr_dcache_clean_invalidate_range(TRACE_ADDRESS, 64u);
+  sg200x_ll_csr_fence_io();
 }
 
 void ConfigureSpi2Pads()
@@ -110,32 +110,32 @@ void ConfigureSpi2Pads()
   // The AIC8800 reset is active-low and shares the SD1 pad group with SPI2.
   // Keep the chip held in reset for the whole SPI2 ownership period; the
   // Linux SDIO node is disabled, but an older boot stage may have released it.
-  sgll_gpio_output_write(GPIO0_REGS, GPIOA26_MASK, false);
-  sgll_csr_fence_io();
-  sgll_gpio_output_enable(GPIO0_REGS, GPIOA26_MASK, true);
-  (void)sgll_pinmux_function_set(PINMUX_EMMC_DAT2_OFFSET,
+  sg200x_ll_gpio_output_write(GPIO0_REGS, GPIOA26_MASK, false);
+  sg200x_ll_csr_fence_io();
+  sg200x_ll_gpio_output_enable(GPIO0_REGS, GPIOA26_MASK, true);
+  (void)sg200x_ll_pinmux_function_set(PINMUX_EMMC_DAT2_OFFSET,
                                  PINMUX_EMMC_DAT2_GPIOA26_FUNCTION);
 
   // D7/SD1_D3 is wired to the C5 CS input. The SG2002 hardware CS produces a
   // separate boundary when its short FIFO empties, so GPIO18 must hold the
   // slave selected for the complete DMA record. Set the output latch high
   // before selecting the GPIO function to avoid a spurious transaction.
-  sgll_gpio_output_write(RTC_GPIO_REGS, RTCSYS_GPIO18_MASK, true);
-  sgll_csr_fence_io();
-  sgll_gpio_output_enable(RTC_GPIO_REGS, RTCSYS_GPIO18_MASK, true);
+  sg200x_ll_gpio_output_write(RTC_GPIO_REGS, RTCSYS_GPIO18_MASK, true);
+  sg200x_ll_csr_fence_io();
+  sg200x_ll_gpio_output_enable(RTC_GPIO_REGS, RTCSYS_GPIO18_MASK, true);
   // GPIO direction state survives a remoteproc restart. Clear stale GPIO
   // output enables on the three alternate-function pads before handing them
   // to SPI2; the SSI supplies SDO/SCK output enables through the pinmux.
-  sgll_gpio_output_enable(RTC_GPIO_REGS, PINMUX_SD1_GPIO_PAD_MASK, false);
+  sg200x_ll_gpio_output_enable(RTC_GPIO_REGS, PINMUX_SD1_GPIO_PAD_MASK, false);
 #ifdef SPI2_HARDWARE_CS
-  (void)sgll_pinmux_function_set(PINMUX_SD1_D3_OFFSET, PINMUX_SD1_D3_SPI2_CS_FUNCTION);
+  (void)sg200x_ll_pinmux_function_set(PINMUX_SD1_D3_OFFSET, PINMUX_SD1_D3_SPI2_CS_FUNCTION);
 #else
-  (void)sgll_pinmux_function_set(PINMUX_SD1_D3_OFFSET, PINMUX_SD1_D3_GPIO18_FUNCTION);
+  (void)sg200x_ll_pinmux_function_set(PINMUX_SD1_D3_OFFSET, PINMUX_SD1_D3_GPIO18_FUNCTION);
 #endif
 
   // Select the dedicated SD1 pad bank rather than the alternate MIPI lane set
   // before changing muxes.
-  sgll_pinmux_select_sd1_pad_bank();
+  sg200x_ll_pinmux_select_sd1_pad_bank();
 #ifdef SPI2_GPIO_BITBANG
   constexpr struct
   {
@@ -159,9 +159,9 @@ void ConfigureSpi2Pads()
 #endif
   for (const auto& pad : spi2_pad_config)
   {
-    (void)sgll_pinmux_function_set(pad.offset, pad.function);
+    (void)sg200x_ll_pinmux_function_set(pad.offset, pad.function);
   }
-  sgll_csr_fence_io();
+  sg200x_ll_csr_fence_io();
 }
 
 uint32_t Crc32(const uint8_t* bytes, size_t length)
@@ -268,8 +268,8 @@ bool SpiTransfer(LibXR::SG200XSPI& spi, const std::array<uint8_t, FRAME_SIZE>& f
   LibXR::WriteOperation operation(semaphore, 1000u);
   const size_t payload_size =
       static_cast<size_t>(frame[18]) | (static_cast<size_t>(frame[19]) << 8u);
-  const size_t record_size = (HEADER_SIZE + payload_size + SGLL_DCACHE_LINE_SIZE - 1u) &
-                             ~(size_t{SGLL_DCACHE_LINE_SIZE} - 1u);
+  const size_t record_size = (HEADER_SIZE + payload_size + LL_DCACHE_LINE_SIZE - 1u) &
+                             ~(size_t{LL_DCACHE_LINE_SIZE} - 1u);
   const auto result =
       spi.ReadAndWrite(LibXR::RawData(response.data(), record_size),
                        LibXR::ConstRawData(frame.data(), record_size), operation);
