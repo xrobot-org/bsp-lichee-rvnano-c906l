@@ -44,22 +44,22 @@ SG200x driver library: some modules are present in the source tree without
 being enabled by the default RISC-V CMake lists, and its SPI/I2C paths do not
 provide the DMA and asynchronous completion guarantees required here.
 
-All production drivers use SGLL for hardware access. `sg2002.h` is the source
+All production drivers use SG200X LL for hardware access. `sg2002.h` is the source
 of register layouts, addresses, fields, IRQs, and reset coordinates. Drivers
-call semantic `sgll_*` interfaces for GPIO, PINMUX, PWM, ADC, watchdog, I2C,
+call semantic `sg200x_ll_*` interfaces for GPIO, PINMUX, PWM, ADC, watchdog, I2C,
 SPI, DMA, PLIC, clock/reset writes, cache maintenance, fences, and the time CSR.
 There are no direct register dereferences, inline assembly, generic MMIO
 adapters, or SDK `arch_helpers.h` includes in `driver/`.
 
 The C++ layer retains LibXR interfaces, ownership, locks, callbacks, transfer
 buffers, error mapping, and the clock-tree model/planner. SDK `request_irq()`
-connects its interrupt dispatcher to the platform. SGLL stays stateless and
+connects its interrupt dispatcher to the platform. SG200X LL stays stateless and
 independent of LibXR/FreeRTOS; compound initialization, register sequences, and
-hardware waits are compiled in `sgll/src/`. Link the CMake `sgll` target when
+hardware waits are compiled in `sg200x-ll-driver/src/`. Link the CMake `sg200x-ll` target when
 building these drivers.
 
 DMA is the only I2C/SPI data path in this platform driver. `SG200XDMAC` owns a
-descriptor pool indexed by channel and uses `sgll_dma_lli_build()` to encode
+descriptor pool indexed by channel and uses `sg200x_ll_dma_lli_build()` to encode
 both normal and circular descriptors. I2C/SPI objects hold their transaction
 state and buffers without embedding hardware descriptors. `SG200XDMAC` uses a
 static partition of the SG200x eight-channel DesignWare AXI DMA controller at
@@ -194,9 +194,9 @@ the board's measured reference voltage when the external reference is used.
 `SG200XI2C` implements I2C0 through I2C4 as a DesignWare APB I2C master. Its
 controller ID selects the RCC peripheral resources; the constructor prepares
 the gates/reset and reads the live `CLK_I2C` rate from `SG200XRCC`. Standard-
-and fast-mode timing counts are derived by `sgll_i2c_timing_calculate()` using
+and fast-mode timing counts are derived by `sg200x_ll_i2c_timing_calculate()` using
 the DesignWare compensation formula and validated against the register widths.
-`sgll_i2c_init_with_timing()` programs those counts, preserving arbitrary
+`sg200x_ll_i2c_init_with_timing()` programs those counts, preserving arbitrary
 representable input clocks rather than restricting the driver to the separate
 25/100 MHz TRM presets. It supports
 7-bit and 10-bit targets and repeated-start register reads. The constructor

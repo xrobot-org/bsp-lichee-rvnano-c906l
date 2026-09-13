@@ -6,7 +6,7 @@ namespace LibXR
 {
 WDT_Type* SG200XWatchdog::InstanceRegisters(Instance instance) noexcept
 {
-  return sgll_wdt_get(static_cast<uint32_t>(instance));
+  return sg200x_ll_wdt_get(static_cast<uint32_t>(instance));
 }
 bool SG200XWatchdog::IsSupportedClock(uint32_t clock_hz) noexcept
 {
@@ -22,7 +22,7 @@ bool SG200XWatchdog::IsSupportedResponseMode(ResponseMode mode) noexcept
 }
 uint32_t SG200XWatchdog::PeriodMs(uint32_t clock_hz, uint8_t top) noexcept
 {
-  const uint64_t cycles = sgll_wdt_timeout_cycles(top);
+  const uint64_t cycles = sg200x_ll_wdt_timeout_cycles(top);
   return static_cast<uint32_t>((cycles * 1000ULL + clock_hz - 1u) / clock_hz);
 }
 SG200XWatchdog::SG200XWatchdog(Instance instance, uint32_t timeout_ms, uint32_t feed_ms,
@@ -93,8 +93,8 @@ ErrorCode SG200XWatchdog::SetConfig(const Configuration& config)
   ErrorCode result = SelectTimeout(config.timeout_ms);
   if (result == ErrorCode::OK)
   {
-    const sgll_wdt_init_t init = {.top = timeout_top_, .interrupt_first = false};
-    if (sgll_wdt_init(regs_, &init))
+    const sg200x_ll_wdt_init_t init = {.top = timeout_top_, .interrupt_first = false};
+    if (sg200x_ll_wdt_init(regs_, &init))
     {
       timeout_ms_ = actual_timeout_ms_;
       auto_feed_interval_ms = config.feed_ms;
@@ -109,8 +109,8 @@ ErrorCode SG200XWatchdog::SetConfig(const Configuration& config)
 }
 void SG200XWatchdog::ConfigureResetRoute() const noexcept
 {
-  (void)sgll_wdt_reset_route_set(instance_index_, reset_target_ == ResetTarget::CPU);
-  sgll_rcc_watchdog_clock_select(clock_hz_ == XTAL32K_HZ);
+  (void)sg200x_ll_wdt_reset_route_set(instance_index_, reset_target_ == ResetTarget::CPU);
+  sg200x_ll_rcc_watchdog_clock_select(clock_hz_ == XTAL32K_HZ);
 }
 ErrorCode SG200XWatchdog::Feed()
 {
@@ -118,7 +118,7 @@ ErrorCode SG200XWatchdog::Feed()
   {
     return ErrorCode::ARG_ERR;
   }
-  sgll_wdt_feed(regs_);
+  sg200x_ll_wdt_feed(regs_);
   return ErrorCode::OK;
 }
 ErrorCode SG200XWatchdog::Start()
@@ -128,7 +128,7 @@ ErrorCode SG200XWatchdog::Start()
     return IsValid() ? ErrorCode::BUSY : ErrorCode::ARG_ERR;
   }
   ConfigureResetRoute();
-  if (!sgll_wdt_start(regs_, timeout_top_,
+  if (!sg200x_ll_wdt_start(regs_, timeout_top_,
                       response_mode_ == ResponseMode::INTERRUPT_THEN_RESET))
   {
     Unlock();

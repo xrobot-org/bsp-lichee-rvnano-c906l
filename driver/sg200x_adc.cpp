@@ -57,8 +57,8 @@ SG200XADC::SG200XADC(std::initializer_list<uint8_t> channels, Config config)
     channel_count_ = 0u;
     return;
   }
-  if (ConfigureDomain(sgll_adc_get(0u)) != ErrorCode::OK ||
-      ConfigureDomain(sgll_adc_get(1u)) != ErrorCode::OK)
+  if (ConfigureDomain(sg200x_ll_adc_get(0u)) != ErrorCode::OK ||
+      ConfigureDomain(sg200x_ll_adc_get(1u)) != ErrorCode::OK)
   {
     channel_count_ = 0u;
     return;
@@ -104,14 +104,14 @@ ErrorCode SG200XADC::ReadRaw(uint8_t index, uint16_t& value) noexcept
   ErrorCode result = WaitIdle(adc);
   if (result == ErrorCode::OK)
   {
-    if (!sgll_adc_start(adc, domain_channel))
+    if (!sg200x_ll_adc_start(adc, domain_channel))
     {
       result = ErrorCode::BUSY;
     }
     else
     {
       result = WaitIdle(adc);
-      if (result == ErrorCode::OK && !sgll_adc_result_read(adc, domain_channel, &value))
+      if (result == ErrorCode::OK && !sg200x_ll_adc_result_read(adc, domain_channel, &value))
       {
         result = ErrorCode::FAILED;
       }
@@ -124,7 +124,7 @@ ErrorCode SG200XADC::ReadRaw(uint8_t index, uint16_t& value) noexcept
 
 SARADC_Type* SG200XADC::DomainInstance(uint8_t channel) noexcept
 {
-  return sgll_adc_get(channel <= SARADC_CHANNEL_COUNT ? 0u : 1u);
+  return sg200x_ll_adc_get(channel <= SARADC_CHANNEL_COUNT ? 0u : 1u);
 }
 
 uint8_t SG200XADC::DomainChannel(uint8_t channel) noexcept
@@ -137,14 +137,14 @@ uint8_t SG200XADC::DomainChannel(uint8_t channel) noexcept
 ErrorCode SG200XADC::EnableClocksAndReset() noexcept
 {
   // The active-domain gate/reset belongs to the shared TOP resource model.
-  // SGLL also prepares the independent RTC-domain clock/reset path.
+  // SG200X LL also prepares the independent RTC-domain clock/reset path.
   const ErrorCode result =
       SG200XRCC::Instance().PreparePeripheral(SG200XRCC::PeripheralId::SarAdc);
   if (result != ErrorCode::OK)
   {
     return result;
   }
-  sgll_rcc_rtc_saradc_enable();
+  sg200x_ll_rcc_rtc_saradc_enable();
   return ErrorCode::OK;
 }
 
@@ -152,16 +152,16 @@ ErrorCode SG200XADC::ConfigureDomain(SARADC_Type* adc) const noexcept
 {
   const ErrorCode idle = WaitIdle(adc);
   if (idle != ErrorCode::OK) return idle;
-  sgll_adc_init_t config;
-  sgll_adc_struct_init(&config);
+  sg200x_ll_adc_init_t config;
+  sg200x_ll_adc_struct_init(&config);
   config.clock_divider = clock_divider_;
   config.external_reference = reference_ == Reference::EXTERNAL_VDD18A;
-  return sgll_adc_init(adc, &config) ? ErrorCode::OK : ErrorCode::STATE_ERR;
+  return sg200x_ll_adc_init(adc, &config) ? ErrorCode::OK : ErrorCode::STATE_ERR;
 }
 
 ErrorCode SG200XADC::WaitIdle(const SARADC_Type* adc) const noexcept
 {
-  return sgll_adc_wait_idle(adc, timeout_iterations_) ? ErrorCode::OK
+  return sg200x_ll_adc_wait_idle(adc, timeout_iterations_) ? ErrorCode::OK
                                                       : ErrorCode::TIMEOUT;
 }
 

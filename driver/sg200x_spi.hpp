@@ -6,7 +6,7 @@
 #include "sg200x_dma.hpp"
 #include "sg200x_ll_spi.h"
 #include "sg200x_rcc.hpp"
-#include "sgll.h"
+#include "sg200x_ll.h"
 #include "spi.hpp"
 
 namespace LibXR
@@ -80,7 +80,7 @@ class SG200XSPI final : public SPI
   ErrorCode StartDmaTransfer(RawData read_data, ConstRawData write_data, OperationRW& op,
                              DmaBufferMode buffer_mode = DmaBufferMode::STAGED,
                              bool has_prefix = false, uint8_t prefix = 0u,
-                             sgll_dma_mode_t dma_mode = SGLL_DMA_MODE_NORMAL);
+                             sg200x_ll_dma_mode_t dma_mode = LL_DMA_MODE_NORMAL);
   void OnDmaComplete(bool rx, ErrorCode result, bool in_isr);
   void FinishDma(ErrorCode result, bool in_isr = false);
   void CancelDmaTransfer();

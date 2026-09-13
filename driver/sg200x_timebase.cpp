@@ -53,7 +53,7 @@ MicrosecondTimestamp Timebase::GetMicroseconds()
   {
     return MicrosecondTimestamp(0u);
   }
-  const uint64_t ticks = sgll_csr_time_read();
+  const uint64_t ticks = sg200x_ll_csr_time_read();
   return MicrosecondTimestamp(ticks_to_microseconds(ticks));
 }
 
@@ -63,7 +63,7 @@ MillisecondTimestamp Timebase::GetMilliseconds()
   {
     return MillisecondTimestamp(0u);
   }
-  const uint64_t ticks = sgll_csr_time_read();
+  const uint64_t ticks = sg200x_ll_csr_time_read();
   return MillisecondTimestamp(ticks_to_microseconds(ticks) / 1000ULL);
 }
 

@@ -6,7 +6,7 @@
 #include <cstring>
 
 #include "sg200x_rcc.hpp"
-#include "sgll.h"
+#include "sg200x_ll.h"
 
 namespace Tree = LibXR::SG200XClockTree;
 using ClockId = Tree::ClockId;

@@ -49,8 +49,11 @@ else()
   )
 endif()
 
-add_subdirectory("${SG200X_BSP_ROOT}/sgll" sgll)
-target_include_directories(sgll SYSTEM PUBLIC "${TOP_DIR}/install/include/arch")
+# sg200x-ll carries its own C906L core layer (inc/sg200x_ll_csr.h) and needs no SDK header.
+# Set -DLL_CORE_BACKEND_SDK=ON -DLL_CORE_INCLUDE_DIR=<sdk arch dir> to build the
+# A/B reference backend against the vendor core_rv64.h instead.
+add_subdirectory("${SG200X_BSP_ROOT}/sg200x-ll-driver" sg200x_ll)
+target_include_directories(sg200x_ll SYSTEM PUBLIC "${TOP_DIR}/install/include/arch")
 
 target_include_directories(xrobot PRIVATE
   ${_xrobot_sdk_include_dirs}
@@ -62,4 +65,4 @@ target_compile_options(xr PRIVATE -fno-exceptions -fno-rtti)
 target_compile_definitions(xrobot PRIVATE
   THEAD_C906
 )
-target_link_libraries(xrobot PUBLIC xr kernel stdc++ sgll)
+target_link_libraries(xrobot PUBLIC xr kernel stdc++ sg200x_ll)

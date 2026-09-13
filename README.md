@@ -1,7 +1,7 @@
 # Guidance Action firmware workspace
 
 This repository contains the application firmware for SG2002 C906L. Shared
-SGLL integration and `driver/` refactors are synchronized from
+SG200X LL integration and `driver/` refactors are synchronized from
 [xrobot-org/bsp-lichee-rvnano-c906l](https://github.com/xrobot-org/bsp-lichee-rvnano-c906l).
 The BSP template retains its LED sample; product `User/` code and camera tools
 are maintained here.
@@ -35,9 +35,9 @@ sdk/sg200x/                   SDK pin, patches, overlay, and board config
 `driver/` contains the C906L coprocessor platform drivers directly in this
 repository; no separate driver submodule is required.
 
-The platform drivers depend on the C23 `sgll` submodule. Initialize both
-`libxr` and `sgll` with `git submodule update --init --recursive`. Peripheral
-register definitions and low-level operations belong to SGLL; LibXR adapters
+The platform drivers depend on the C23 `sg200x-ll-driver` submodule. Initialize both
+`libxr` and `sg200x-ll-driver` with `git submodule update --init --recursive`. Peripheral
+register definitions and low-level operations belong to SG200X LL; LibXR adapters
 and clock/resource policy belong to `driver/`.
 
 The SDK overlay accepts an application-owned `User/CMakeLists.txt` that adds
@@ -103,6 +103,27 @@ Put the xPack `bin` directory on `PATH`, or set the compiler prefix
 explicitly. The native build exports
 `build/clangd/compile_commands.json` directly, so clangd uses the same Windows
 paths and flags as the firmware build.
+
+The host-side tests and tools are compiled for Linux rather than for the C906,
+so the firmware database cannot describe them: the RISC-V newlib sysroot has no
+POSIX headers, and `sys/mman.h` and `ucontext.h` would be reported as missing.
+`.clangd` therefore sends `driver/tests`, `sg200x-ll-driver/tests`, `tools`, and the LibXR
+Linux backends to a second database, `build/clangd-host/compile_commands.json`.
+The firmware build exports both, so a normal build leaves clangd consistent.
+After a source restructure that no build has picked up yet -- moving a header,
+renaming a library directory, editing the SDK overlay -- refresh both databases
+without compiling:
+
+```sh
+cmake --build build --target clangd
+```
+
+It reconfigures the staged SDK task project, re-exports
+`build/clangd/compile_commands.json`, then configures the standalone host test
+projects with GCC/G++ for `build/clangd-host/compile_commands.json`. The host
+part needs a native compiler and the firmware part needs an SDK build tree staged
+by an earlier firmware build; missing pieces warn and leave the other database
+alone rather than failing.
 
 `CMakeUserPresets.json` is intentionally Git-ignored and contains this
 workstation's SDK, Bash, compiler, and board paths. Configure and build from
