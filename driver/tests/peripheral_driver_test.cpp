@@ -1,6 +1,7 @@
 #include <sys/mman.h>
 
 #include <array>
+#include <atomic>
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -190,7 +191,7 @@ void CheckI2c()
                 {400000u});
   assert(i2c.IsValid());
   assert(I2C0_REGS->SS_SCL_HCNT == 212u && I2C0_REGS->FS_SCL_LCNT == 79u);
-  Status status = Status::READY;
+  std::atomic<Status> status{Status::READY};
   ReadOperation operation(status);
   std::array<uint8_t, 2> data{};
   assert(i2c.MemRead(0x2ABu, 0x1234u, {data.data(), data.size()}, operation,
@@ -229,7 +230,7 @@ void CheckSpi()
   assert(spi.IsValid());
   std::array<uint8_t, 3> output{1u, 2u, 3u};
   std::array<uint8_t, 3> input{};
-  Status status = Status::READY;
+  std::atomic<Status> status{Status::READY};
   WriteOperation operation(status);
   assert(spi.ReadAndWrite({input.data(), input.size()}, {output.data(), output.size()},
                           operation) == ErrorCode::OK);

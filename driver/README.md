@@ -55,7 +55,7 @@ The C++ layer retains LibXR interfaces, ownership, locks, callbacks, transfer
 buffers, error mapping, and the clock-tree model/planner. SDK `request_irq()`
 connects its interrupt dispatcher to the platform. SG200X LL stays stateless and
 independent of LibXR/FreeRTOS; compound initialization, register sequences, and
-hardware waits are compiled in `sg200x-ll-driver/src/`. Link the CMake `sg200x-ll` target when
+hardware waits are compiled in `sg200x-ll-driver/src/`. Link the CMake `sg200x_ll` target when
 building these drivers.
 
 DMA is the only I2C/SPI data path in this platform driver. `SG200XDMAC` owns a

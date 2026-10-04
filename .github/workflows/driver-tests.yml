@@ -1,0 +1,41 @@
+name: Driver tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  driver-tests:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/xrobot-org/docker-image-linux:main
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Show the submodule revisions
+        run: |
+          git config --global --add safe.directory '*'
+          git submodule status
+          g++ --version | head -n 1
+
+      # Builds the RCC, GPIO, PWM, ADC, watchdog, I2C and SPI drivers with the SG200X LL
+      # library and the LibXR Linux host backend, then runs the register-image tests.
+      - name: Configure
+        run: |
+          cmake -S driver/tests -B build/driver-tests -G Ninja \
+            -DCMAKE_C_FLAGS="-O2 -Wall -Wextra -Werror" \
+            -DCMAKE_CXX_FLAGS="-O2 -Wall -Wextra -Werror"
+
+      - name: Build
+        run: cmake --build build/driver-tests
+
+      - name: Test
+        run: ctest --test-dir build/driver-tests --output-on-failure
