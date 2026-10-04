@@ -1,6 +1,6 @@
 [submodule "libxr"]
 	path = libxr
-	url = https://github.com/jiu-xiao/libxr
+	url = https://github.com/xrobot-org/libxr.git
 
 [submodule "sg200x-ll-driver"]
 	path = sg200x-ll-driver
