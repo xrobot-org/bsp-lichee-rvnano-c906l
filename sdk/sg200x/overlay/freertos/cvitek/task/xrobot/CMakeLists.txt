@@ -14,7 +14,6 @@ set(LIBXR_SYSTEM freertos)
 set(LIBXR_DRIVER "")
 set(LIBXR_SINGLE_CORE ON)
 set(LIBXR_STATIC_BUILD ON)
-set(LIBXR_NO_EIGEN ON)
 set(LIBXR_PRINT_ENABLE_FLOAT 0)
 add_subdirectory("${SG200X_BSP_ROOT}/libxr" "${CMAKE_BINARY_DIR}/xrobot-libxr")
 
