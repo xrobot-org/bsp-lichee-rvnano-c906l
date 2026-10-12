@@ -23,7 +23,6 @@ add_test(NAME clock_controller COMMAND clock_controller_test)
 # cache operations and I2C enable acknowledgment need test hardware hooks.
 set(LIBXR_SYSTEM linux)
 set(LIBXR_DRIVER "")
-set(LIBXR_NO_EIGEN ON)
 add_subdirectory("${CMAKE_CURRENT_SOURCE_DIR}/../../libxr" libxr EXCLUDE_FROM_ALL)
 # LibXR's Linux system backend requires its monotonic clock; the Linux USB,
 # networking, and device drivers are unnecessary for these register-image tests.
